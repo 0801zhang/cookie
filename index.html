@@ -2644,10 +2644,10 @@ function viewSettings() {
       <span class="g"><b>自动同步</b><span>改动后 20 秒自动传一次</span></span>
       <button class="switch ${cc.auto ? 'on' : ''}" data-cloud-auto><i></i></button>
     </div>
-    <div class="setrow" style="gap:8px;">
-      <button class="chip ${cloudReady ? 'on' : ''}" style="flex:1; padding:11px;" id="cloudPushBtn" ${cloudReady ? '' : 'disabled'}>立即上传</button>
-      <button class="chip ${cloudReady ? 'on' : ''}" style="flex:1; padding:11px;" id="cloudPullBtn" ${cloudReady ? '' : 'disabled'}>从云端恢复</button>
-      <button class="chip" style="flex:0 0 100%; padding:11px; margin-top:8px;" id="cfgLinkBtn" ${cloudReady ? '' : 'disabled'}>复制配置链接（换设备用）</button>
+    <div class="setrow" style="gap:8px; flex-wrap:wrap;">
+      <button class="chip ${cloudReady ? 'on' : ''}" style="flex:1 1 0; min-width:0; padding:11px;" id="cloudPushBtn" ${cloudReady ? '' : 'disabled'}>立即上传</button>
+      <button class="chip ${cloudReady ? 'on' : ''}" style="flex:1 1 0; min-width:0; padding:11px;" id="cloudPullBtn" ${cloudReady ? '' : 'disabled'}>从云端恢复</button>
+      <button class="chip" style="flex:0 0 100%; padding:11px; margin-top:2px;" id="cfgLinkBtn" ${cloudReady ? '' : 'disabled'}>复制配置链接（换设备用）</button>
     </div>
     <div class="setrow" style="font-size:11px; color:var(--dim); line-height:1.7;">
       上次上传：${DB.settings.lastPush ? new Date(DB.settings.lastPush).toLocaleString('zh-CN') : '还没传过'}
@@ -3992,7 +3992,7 @@ async function cloudPull(force) {
 async function cloudRestore() {
   const d = await cloudPull(true);
   if (!d) return;
-  confirmSheet('从 GitHub 恢复', '云端数据会覆盖这台设备上的全部内容，确定？', '覆盖并恢复', () => {
+  confirmSheet('从云端恢复', '云端数据会覆盖这台设备上的全部内容，确定？', '覆盖并恢复', () => {
     DB = Object.assign(defDB(), d.payload);
     DB.settings = Object.assign(defDB().settings, d.payload.settings || {});
     CB = DB;
@@ -4046,8 +4046,15 @@ function cloudConfigFlow() {
       } else {
         toast('至少把一组填完整'); return;
       }
-      close(); toast('已保存，正在测试…');
-      setTimeout(() => cloudPush(false), 300);
+      close();
+      const hasProgress = DB.sched && Object.keys(DB.sched).length > 0;
+      if (hasProgress) {
+        toast('已保存，正在上传…');
+        setTimeout(() => cloudPush(false), 300);
+      } else {
+        toast('已保存，正在拉取云端数据…');
+        setTimeout(() => cloudRestore(), 400);
+      }
     };
   });
 }
