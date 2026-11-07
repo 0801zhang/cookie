@@ -2520,7 +2520,7 @@ function viewReport() {
 function viewSettings() {
   const st = DB.settings;
   const cc = cloudCfg();
-  const cloudReady = !!(cc.url && cc.key && cc.sync);
+  const cloudReady = !!(cc.url && cc.key && cc.sync) || !!(cc.gUser && cc.gRepo && cc.gToken);
   return `
   <div style="margin:6px 0 16px;">
     <div style="font-size:25px; font-weight:700; letter-spacing:-.6px;">设置</div>
@@ -2593,11 +2593,11 @@ function viewSettings() {
   <div class="sec-label">云端同步</div>
   <div class="list" style="gap:0;">
     <button class="setrow" id="cloudCfgBtn" style="width:100%; text-align:left;">
-      <span class="g"><b>${cloudReady ? '已连接' : '未配置'}</b><span>${cloudReady ? cc.url.replace(/^https?:\/\//, '') + ' · ' + cc.sync : '填 Supabase 地址和同步码'}</span></span>
+      <span class="g"><b>${cloudReady ? '已配置' : '未配置'}</b><span>${(cc.url && cc.key && cc.sync) ? 'Supabase · ' + cc.sync : ((cc.gUser && cc.gRepo && cc.gToken) ? 'GitHub · ' + cc.gUser + '/' + cc.gRepo : 'Supabase 或 GitHub，任选其一')}</span></span>
       <span style="color:var(--dim);">›</span>
     </button>
     <div class="setrow">
-      <span class="g"><b>自动同步</b><span>改动后 20 秒静默上传</span></span>
+      <span class="g"><b>自动同步</b><span>改动后 20 秒自动传一次</span></span>
       <button class="switch ${cc.auto ? 'on' : ''}" data-cloud-auto><i></i></button>
     </div>
     <div class="setrow" style="gap:8px;">
@@ -3718,35 +3718,46 @@ function cloudCfg() {
   try { return JSON.parse(localStorage.getItem(CLOUD_CFG_KEY)) || {}; } catch (e) { return {}; }
 }
 function saveCloudCfg(c) { localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify(c)); }
-function cloudBase() {
+function ghConf() {
   const c = cloudCfg();
-  if (!c.url || !c.key || !c.sync) return null;
-  return { url: c.url.replace(/\/+$/, ''), key: c.key, sync: c.sync };
+  if (!c.gUser || !c.gRepo || !c.gToken) return null;
+  return { user: c.gUser, repo: c.gRepo, token: c.gToken, path: c.gPath || 'binggan-data.json' };
 }
+function ghApi() {
+  const g = ghConf();
+  return g ? 'https://api.github.com/repos/' + g.user + '/' + g.repo + '/contents/' + g.path : null;
+}
+function ghHeaders() {
+  const g = ghConf();
+  return {
+    'Authorization': 'Bearer ' + g.token,
+    'Accept': 'application/vnd.github+json',
+    'Content-Type': 'application/json'
+  };
+}
+const b64enc = str => btoa(unescape(encodeURIComponent(str)));
+const b64dec = b64 => decodeURIComponent(escape(atob(b64.replace(/\s/g, ''))));
 
-async function cloudPush(silent) {
-  const b = cloudBase();
-  if (!b) { if (!silent) toast('先配置云端同步'); return false; }
+async function ghPush(silent) {
+  const g = ghConf();
+  if (!g) { if (!silent) toast('先配置同步'); return false; }
   try {
-    const r = await fetch(b.url + '/rest/v1/binggan_data?on_conflict=id', {
-      method: 'POST',
-      headers: {
-        'apikey': b.key,
-        'Authorization': 'Bearer ' + b.key,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates,return=minimal'
-      },
-      body: JSON.stringify([{
-        id: b.sync,
-        payload: JSON.stringify(DB),
-        updated_at: new Date().toISOString(),
-        device: (navigator.userAgent || 'web').slice(0, 40)
-      }])
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    let sha = null;
+    const r0 = await fetch(ghApi(), { headers: ghHeaders() });
+    if (r0.ok) { const j = await r0.json(); sha = j.sha; }
+    const body = { message: 'sync ' + new Date().toISOString(), content: b64enc(JSON.stringify(DB)) };
+    if (sha) body.sha = sha;
+    const r = await fetch(ghApi(), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
+    if (!r.ok) {
+      const hint = r.status === 401 ? '（Token 不对或过期）'
+        : r.status === 403 ? '（Token 没有写权限）'
+        : r.status === 404 ? '（仓库不存在，或 Token 没有这个仓库的权限）'
+        : '';
+      throw new Error('HTTP ' + r.status + hint);
+    }
     DB.settings.lastPush = Date.now();
     try { localStorage.setItem(CARD_KEY, JSON.stringify(DB)); } catch (e) {}
-    if (!silent) toast('已上传到云端');
+    if (!silent) toast('已上传到 GitHub');
     return true;
   } catch (e) {
     if (!silent) toast('上传失败：' + e.message);
@@ -3754,12 +3765,70 @@ async function cloudPush(silent) {
   }
 }
 
-async function cloudPull(force) {
-  const b = cloudBase();
-  if (!b) { toast('先配置云端同步'); return null; }
+async function ghPull(force) {
+  const g = ghConf();
+  if (!g) { toast('先配置同步'); return null; }
+  try {
+    const r = await fetch(ghApi(), { headers: ghHeaders() });
+    if (r.status === 404) { if (force) toast('仓库里还没有同步文件'); return null; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    return { payload: JSON.parse(b64dec(j.content)), at: (j.commit && j.commit.author && j.commit.author.date) || '' };
+  } catch (e) {
+    toast('拉取失败：' + e.message);
+    return null;
+  }
+}
+
+function sbConf() {
+  const c = cloudCfg();
+  if (!c.url || !c.key || !c.sync) return null;
+  return { url: c.url.replace(/\/+$/, ''), key: c.key, sync: c.sync };
+}
+
+function sbHeaders(key, extra) {
+  const h = Object.assign({ 'apikey': key }, extra || {});
+  if (key.indexOf('eyJ') === 0) h['Authorization'] = 'Bearer ' + key;
+  return h;
+}
+
+async function sbPush(silent) {
+  const b = sbConf();
+  if (!b) return false;
+  try {
+    const r = await fetch(b.url + '/rest/v1/binggan_data?on_conflict=id', {
+      method: 'POST',
+      headers: sbHeaders(b.key, {
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=minimal'
+      }),
+      body: JSON.stringify([{
+        id: b.sync,
+        payload: JSON.stringify(DB),
+        updated_at: new Date().toISOString(),
+        device: (navigator.userAgent || 'web').slice(0, 40)
+      }])
+    });
+    if (!r.ok) {
+      const hint = r.status === 401 ? '（key 不对）' : r.status === 404 ? '（表不存在，SQL 没跑成功）' : r.status === 403 ? '（RLS 策略没配，重跑 SQL）' : '';
+      throw new Error('HTTP ' + r.status + hint);
+    }
+    DB.settings.lastPush = Date.now();
+    try { localStorage.setItem(CARD_KEY, JSON.stringify(DB)); } catch (e) {}
+    if (!silent) toast('已上传到 Supabase');
+    return true;
+  } catch (e) {
+    if (!silent) toast('上传失败：' + e.message);
+    return false;
+  }
+}
+
+async function sbPull(force) {
+  const b = sbConf();
+  if (!b) return null;
   try {
     const r = await fetch(b.url + '/rest/v1/binggan_data?id=eq.' + encodeURIComponent(b.sync) + '&select=payload,updated_at', {
-      headers: { 'apikey': b.key, 'Authorization': 'Bearer ' + b.key }
+      headers: sbHeaders(b.key)
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const arr = await r.json();
@@ -3771,21 +3840,34 @@ async function cloudPull(force) {
   }
 }
 
+async function cloudPush(silent) {
+  if (sbConf()) return sbPush(silent);
+  if (ghConf()) return ghPush(silent);
+  if (!silent) toast('先配置同步');
+  return false;
+}
+async function cloudPull(force) {
+  if (sbConf()) return sbPull(force);
+  if (ghConf()) return ghPull(force);
+  toast('先配置同步');
+  return null;
+}
+
 async function cloudRestore() {
   const d = await cloudPull(true);
   if (!d) return;
-  confirmSheet('从云端恢复', '云端数据会覆盖这台设备上的全部内容，确定？', '覆盖并恢复', () => {
+  confirmSheet('从 GitHub 恢复', '云端数据会覆盖这台设备上的全部内容，确定？', '覆盖并恢复', () => {
     DB = Object.assign(defDB(), d.payload);
     DB.settings = Object.assign(defDB().settings, d.payload.settings || {});
     CB = DB;
-    saveDB(); applyTheme(); toast('已从云端恢复'); go('home');
+    saveDB(); applyTheme(); toast('已恢复'); go('home');
   });
 }
 
 let _autoSyncT;
 function scheduleSync() {
   const c = cloudCfg();
-  if (!c.auto || !c.url || !c.key || !c.sync) return;
+  if (!c.auto || (!ghConf() && !sbConf())) return;
   clearTimeout(_autoSyncT);
   _autoSyncT = setTimeout(() => { cloudPush(true); }, 20000);
 }
@@ -3793,20 +3875,35 @@ function scheduleSync() {
 function cloudConfigFlow() {
   const c = cloudCfg();
   sheet(`
-    <h3>云端同步配置</h3>
-    <div class="sdesc">在 Supabase 建一个项目，跑一遍建表 SQL，然后把项目地址和 anon key 填进来。同步码由你自己定，相当于这把锁的钥匙。</div>
-    <div class="field"><label>Project URL</label><input id="cUrl" placeholder="https://xxxx.supabase.co" value="${escAttr(c.url || '')}"></div>
-    <div class="field"><label>anon public key</label><input id="cKey" placeholder="eyJhbGciOi..." value="${escAttr(c.key || '')}"></div>
-    <div class="field"><label>同步码（自己定，越乱越好）</label><input id="cSync" placeholder="例如 binggan-7f3a9c" value="${escAttr(c.sync || '')}"></div>
-    <button class="btn-main" id="cSave">保存</button>
+    <h3>同步配置</h3>
+    <div class="sdesc">两种方式任选其一，填哪一组就用哪一个。</div>
+
+    <div style="font-size:13px; font-weight:600; margin:14px 0 8px;">方式一 · Supabase</div>
+    <div class="field"><label>Project URL</label><input id="sUrl" placeholder="https://xxxx.supabase.co" value="${escAttr(c.url || '')}"></div>
+    <div class="field"><label>anon key</label><input id="sKey" placeholder="eyJhbGciOi..." value="${escAttr(c.key || '')}"></div>
+    <div class="field"><label>同步码（自己定，越乱越好）</label><input id="sSync" placeholder="binggan-7f3a9c2e" value="${escAttr(c.sync || '')}"></div>
+
+    <div style="font-size:13px; font-weight:600; margin:20px 0 8px;">方式二 · GitHub</div>
+    <div class="field"><label>用户名</label><input id="gUser" placeholder="0801zhang" value="${escAttr(c.gUser || '')}"></div>
+    <div class="field"><label>仓库名</label><input id="gRepo" placeholder="binggan-data" value="${escAttr(c.gRepo || '')}"></div>
+    <div class="field"><label>Token</label><input id="gToken" type="password" placeholder="github_pat_..." value="${escAttr(c.gToken || '')}"></div>
+
+    <button class="btn-main" id="cSave">保存并测试</button>
   `, (el, close) => {
     el.querySelector('#cSave').onclick = () => {
-      const url = el.querySelector('#cUrl').value.trim();
-      const key = el.querySelector('#cKey').value.trim();
-      const sync = el.querySelector('#cSync').value.trim();
-      if (!url || !key || !sync) { toast('三项都要填'); return; }
-      saveCloudCfg({ url, key, sync, auto: c.auto || false });
-      close(); toast('已保存'); render();
+      const v = id => (el.querySelector('#' + id).value || '').trim();
+      const sUrl = v('sUrl'), sKey = v('sKey'), sSync = v('sSync');
+      const gUser = v('gUser'), gRepo = v('gRepo'), gToken = v('gToken');
+      const auto = cloudCfg().auto || false;
+      if (sUrl && sKey && sSync) {
+        saveCloudCfg({ url: sUrl, key: sKey, sync: sSync, auto });
+      } else if (gUser && gRepo && gToken) {
+        saveCloudCfg({ gUser, gRepo, gToken, auto });
+      } else {
+        toast('至少把一组填完整'); return;
+      }
+      close(); toast('已保存，正在测试…');
+      setTimeout(() => cloudPush(false), 300);
     };
   });
 }
