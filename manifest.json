@@ -1,0 +1,27 @@
+{
+  "name": "饼干 · 公式卡片",
+  "short_name": "饼干",
+  "description": "资料分析公式卡片，FSRS 间隔重复",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fff7f9",
+  "theme_color": "#ff6fa5",
+  "lang": "zh-CN",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
