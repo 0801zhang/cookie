@@ -352,6 +352,16 @@ sub{font-size:.7em; vertical-align:sub; line-height:0;}
   overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical;}
 .citem .m{font-size:10.5px; color:var(--dim); margin-top:5px;}
 
+/* ---------- 柱状图 ---------- */
+.chart{display:flex; align-items:flex-end; gap:4px; height:112px; padding:12px 10px 8px;
+  background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden;}
+.chart .col{flex:1; min-width:0; display:flex; flex-direction:column; align-items:center;
+  gap:3px; justify-content:flex-end; height:100%; overflow:hidden;}
+.chart .col i{width:100%; border-radius:4px 4px 2px 2px; min-height:3px; transition:height .4s;}
+.chart .col i.zero{background:var(--trace);}
+.chart .col u{font-size:9px; color:var(--dim); text-decoration:none;
+  white-space:nowrap; line-height:1; height:10px; overflow:hidden;}
+
 /* ---------- 热力图 ---------- */
 .heat{display:grid; grid-auto-flow:column; grid-template-rows:repeat(7, 1fr); gap:3px;}
 .heat i{width:100%; aspect-ratio:1; border-radius:2.5px; background:var(--trace);}
@@ -2477,12 +2487,12 @@ function viewReport() {
   </div>
 
   <div class="sec-label">近 14 天做题量</div>
-  <div class="chart" style="height:120px; background:var(--card); border:1px solid var(--line); border-radius:16px;">
-    ${trend.map(t => `
+  <div class="chart">
+    ${trend.map((t, ti) => `
       <div class="col">
-        <div style="font-size:9px; color:var(--dim); min-height:11px;">${t.n || ''}</div>
-        <i class="${t.n ? '' : 'zero'}" style="height:${Math.max(3, t.n / maxN * 78)}px; background:${t.n ? 'linear-gradient(180deg,#ffa8cb,#ff5f9c)' : 'var(--trace)'};"></i>
-        <u style="font-size:9px; color:var(--dim);">${t.label}</u>
+        <div style="font-size:8px; color:var(--dim); height:10px; line-height:10px; overflow:hidden;">${t.n || ''}</div>
+        <i class="${t.n ? '' : 'zero'}" style="height:${Math.max(3, Math.round(t.n / maxN * 56))}px; background:${t.n ? 'linear-gradient(180deg,#ffa8cb,#ff5f9c)' : 'var(--trace)'};"></i>
+        <u>${ti % 2 === 0 ? t.label.split('/')[1] : ''}</u>
       </div>`).join('')}
   </div>
 
