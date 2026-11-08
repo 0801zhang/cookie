@@ -3444,6 +3444,121 @@ function loadStore() {
 }
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (e) {}
+  /* 刷题记录变化也要排同步，否则做完的题永远传不上去 */
+  try { scheduleSync(); } catch (e) {}
+}
+
+/* 单张卡的作答记录合并：次数、错题标记都保留 */
+function mergeCardRecord(x, y) {
+  if (!x) return y;
+  if (!y) return x;
+  const r = Object.assign({}, x, y);
+  r.r = Math.max(x.r || 0, y.r || 0);
+  r.w = Math.max(x.w || 0, y.w || 0);
+  r.box = Math.max(x.box || 0, y.box || 0);
+  r.last = Math.max(x.last || 0, y.last || 0);
+  r.next = Math.max(x.next || 0, y.next || 0);
+  if (x.inWrong === true || y.inWrong === true) r.inWrong = true;
+  else if (x.inWrong === false && y.inWrong === false) r.inWrong = false;
+  return r;
+}
+
+/* 学习日志：按「时间+题目」去重，取并集 */
+function mergeLogs(a, b) {
+  const seen = {}, out = [];
+  (b || []).concat(a || []).forEach(function (x) {
+    if (!x) return;
+    const k = (x.t || 0) + '|' + (x.id || '');
+    if (seen[k]) return;
+    seen[k] = 1; out.push(x);
+  });
+  out.sort(function (p, q) { return (p.t || 0) - (q.t || 0); });
+  return out.length > 5000 ? out.slice(out.length - 5000) : out;
+}
+
+/* 模考存档：按 id / 时间戳去重，取并集 */
+function mergeSessions(a, b) {
+  const map = {};
+  (b || []).concat(a || []).forEach(function (x) {
+    if (!x) return;
+    const k = x.id || x.at || x.t || ('x' + JSON.stringify(x).slice(0, 60));
+    if (!map[k]) map[k] = x;
+  });
+  const out = Object.keys(map).map(function (k) { return map[k]; });
+  out.sort(function (p, q) { return (q.at || q.t || 0) - (p.at || p.t || 0); });
+  return out;
+}
+
+/* 卡组：按 id 合并，本机独有的保留 */
+function mergeDecks(a, b) {
+  const map = {}, order = [];
+  (a || []).forEach(function (d) {
+    if (!d) return;
+    const k = d.id || d.name;
+    if (!map[k]) { map[k] = d; order.push(k); }
+  });
+  (b || []).forEach(function (d) {
+    if (!d) return;
+    const k = d.id || d.name;
+    if (!map[k]) order.push(k);
+    map[k] = d;
+  });
+  return order.map(function (k) { return map[k]; });
+}
+
+/* 按日期合并计数表：{日期: 数字} 或 {日期: {模块: 数字}} */
+function mergeDaysMap(a, b) {
+  const r = {};
+  [a || {}, b || {}].forEach(function (src) {
+    Object.keys(src).forEach(function (k) {
+      const v = src[k];
+      if (v && typeof v === 'object') {
+        const cur = r[k] || (r[k] = {});
+        Object.keys(v).forEach(function (x) {
+          const n = v[x] || 0;
+          if (typeof n === 'number') cur[x] = Math.max(cur[x] || 0, n);
+        });
+      } else if (typeof v === 'number') {
+        if (typeof r[k] === 'object') return;
+        r[k] = Math.max(r[k] || 0, v);
+      }
+    });
+  });
+  return r;
+}
+
+/* 合并主页统计：模块进度、每日完成数都取较大值，谁都不会被清空 */
+function mergeDBStats(a, b) {
+  const A = a || {}, B = b || {};
+  return Object.assign({}, A, B, {
+    total: Math.max(A.total || 0, B.total || 0),
+    right: Math.max(A.right || 0, B.right || 0),
+    timeMs: Math.max(A.timeMs || 0, B.timeMs || 0),
+    days: mergeDaysMap(A.days, B.days),
+    moduleDays: mergeDaysMap(A.moduleDays, B.moduleDays)
+  });
+}
+
+/* 合并复习排程：同一张卡取练习次数多的那条 */
+function mergeSched(a, b) {
+  const A = a || {}, B = b || {};
+  const r = {};
+  Object.keys(B).forEach(function (k) { r[k] = B[k]; });
+  Object.keys(A).forEach(function (k) {
+    const x = A[k], y = B[k];
+    if (!y) { r[k] = x; return; }
+    r[k] = ((x && x.reps) || 0) >= ((y && y.reps) || 0) ? x : y;
+  });
+  return r;
+}
+
+function sumModuleDays(md) {
+  let n = 0;
+  Object.keys(md || {}).forEach(function (d) {
+    const x = md[d] || {};
+    Object.keys(x).forEach(function (k) { if (typeof x[k] === 'number') n += x[k]; });
+  });
+  return n;
 }
 
 /* 合并两份额刷题记录：按题目取练习次数多的那份，统计取并集，任何一边都不会被清空 */
@@ -3453,9 +3568,7 @@ function mergeStore(a, b) {
   const cards = {};
   Object.keys(bc).forEach(function (k) { cards[k] = bc[k]; });
   Object.keys(ac).forEach(function (k) {
-    const x = ac[k], y = bc[k];
-    if (!y) { cards[k] = x; return; }
-    cards[k] = ((x.r || 0) + (x.w || 0)) >= ((y.r || 0) + (y.w || 0)) ? x : y;
+    cards[k] = mergeCardRecord(ac[k], bc[k]);
   });
   const as = A.stats || {}, bs = B.stats || {};
   const ad = as.days || {}, bd = bs.days || {};
@@ -3584,7 +3697,16 @@ function viewHome() {
   <div class="hero">
     <h1>今天刷题了吗</h1>
     <p>速算靠肌肉记忆，常识靠反复偶遇。<br>一天 10 分钟，足够。</p>
-    <div style="margin-top:8px; font-size:10.5px; color:var(--dim); opacity:.55;">v${typeof APP_VERSION !== 'undefined' ? APP_VERSION : '?'} · ${typeof BUILD_STAMP !== 'undefined' ? BUILD_STAMP : ''}</div>
+    <div style="margin-top:8px; font-size:10.5px; color:var(--dim); opacity:.55;">v${typeof APP_VERSION !== 'undefined' ? APP_VERSION : '?'} · ${typeof BUILD_STAMP !== 'undefined' ? BUILD_STAMP : ''}${(function () {
+      try {
+        if (!cloudCfg().auto) return '';
+        if (!geConf() && !sbConf() && !ghConf()) return '';
+        const t = DB.settings.lastPush;
+        if (!t) return ' · 未同步';
+        const d = new Date(t);
+        return ' · 已同步 ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      } catch (e) { return ''; }
+    })()}</div>
   </div>
 
   <div class="stat-row">
@@ -3765,7 +3887,16 @@ function viewResult() {
 
 /* ---------------- 错题本 ---------------- */
 function viewWrong() {
-  const ids = Object.keys(store.cards).filter(k => isWrongCard(store.cards[k]) && !isDel(k));
+  /* 按「题干+答案」去重：题库里同一道题若有多个 id，错题本也只显示一条 */
+  const seenQ = new Set();
+  const ids = Object.keys(store.cards).filter(k => isWrongCard(store.cards[k]) && !isDel(k)).filter(function (k) {
+    const c = findCard(k);
+    if (!c) return false;
+    const key = String(c.headline || c.q || c.front || '').replace(/\s+/g, '') + '|' + String(c.ans != null ? c.ans : (c.back || ''));
+    if (seenQ.has(key)) return false;
+    seenQ.add(key);
+    return true;
+  });
   if (!ids.length) return `<div class="empty">还没有错题。<br>选错的题会自动收进来，一直留到你连续答对三次。</div>`;
   const items = ids.map(id => {
     const card = findCard(id);
@@ -4116,7 +4247,7 @@ function viewSettings() {
       <span style="color:var(--dim);">›</span>
     </button>
     <div class="setrow">
-      <span class="g"><b>自动同步</b><span>改动后 90 秒自动传一次</span></span>
+      <span class="g"><b>自动同步</b><span>做题后 10 秒自动上传</span></span>
       <button class="switch ${cc.auto ? 'on' : ''}" data-cloud-auto><i></i></button>
     </div>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:4px 0 2px;">
@@ -4136,6 +4267,10 @@ function viewSettings() {
   <div class="setblock">
   <div class="sec-label">复习</div>
   <div class="list" style="gap:0;">
+    <div class="setrow">
+      <span class="g"><b>当天已刷不重复</b><span>换设备接着刷，刚做过的题不会再冒出来</span></span>
+      <button class="switch ${DB.settings.noRepeatToday !== false ? 'on' : ''}" data-no-repeat><i></i></button>
+    </div>
     <div class="setrow">
       <span class="g"><b>默认复习模式</b><span>翻卡看答案，或挖空填关键公式</span></span>
     </div>
@@ -5041,6 +5176,10 @@ function normalizeBackup(raw) {
     stats: d.stats || {},
     mods: d.mods || null,
     snapshots: Array.isArray(d.snapshots) ? d.snapshots : null,
+    idiomRel: d.idiomRel || null,
+    idiomRelV: d.idiomRelV || 0,
+    store: d.store || null,
+    images: d.images || null,
     at: raw.at || null,
     ver: raw.v || 0
   };
@@ -5258,6 +5397,10 @@ function bind() {
     if (c.auto && c.url && c.key && c.sync) cloudPush(true);
     render();
   });
+  document.querySelectorAll('[data-no-repeat]').forEach(b => b.onclick = () => {
+    DB.settings.noRepeatToday = DB.settings.noRepeatToday === false ? true : false;
+    saveDB(); render();
+  });
   if ($('#cloudPushBtn')) $('#cloudPushBtn').onclick = () => cloudPush(false);
   if ($('#cloudPullBtn')) $('#cloudPullBtn').onclick = cloudRestore;
   if ($('#cloudMergeBtn')) $('#cloudMergeBtn').onclick = () => cloudMerge();
@@ -5326,8 +5469,24 @@ function startQuiz(mode) {
   const selected = [];
   const now = Date.now();
 
+  /* 今天已经做对过的题：换设备接着刷时不再重复出现（做错的题还会保留，需要重练） */
+  const tdKey = todayKey();
+  const doneToday = new Set();
+  if (DB.settings.noRepeatToday !== false) {
+    Object.keys(store.cards).forEach(function (id) {
+      const sc = store.cards[id];
+      if (!sc || !sc.last) return;
+      try {
+        if (dateKey(new Date(sc.last)) === tdKey && (sc.w || 0) === 0) doneToday.add(id);
+      } catch (e) {}
+    });
+  }
+
   // 1) 到期复习题
-  const dueIds = pool.filter(c => { const s = store.cards[c.id]; return s && s.next <= now && (s.r + s.w) > 0; }).map(c => c.id);
+  const dueIds = pool.filter(c => {
+    const s = store.cards[c.id];
+    return s && s.next <= now && (s.r + s.w) > 0 && !doneToday.has(c.id);
+  }).map(c => c.id);
   const dueCards = shuffle(pool.filter(c => dueIds.includes(c.id))).slice(0, 12);
   selected.push(...dueCards);
 
@@ -5337,12 +5496,13 @@ function startQuiz(mode) {
   const freshCards = fresh.slice(0, Math.max(0, n - selected.length));
   selected.push(...freshCards);
 
-  // 3) 还不够就随便补
+  // 3) 还不够就补，优先挑今天没做过的
   while (selected.length < n) {
-    const extra = pick(pool);
-    if (!seen.has(extra.id)) { selected.push(extra); seen.add(extra.id); }
-    else if (pool.length <= n) break;
-    else if (selected.length >= pool.length) break;
+    let cand = pool.filter(c => !seen.has(c.id) && !doneToday.has(c.id));
+    if (!cand.length) cand = pool.filter(c => !seen.has(c.id));
+    if (!cand.length || selected.length >= pool.length) break;
+    const extra = pick(cand);
+    selected.push(extra); seen.add(extra.id);
   }
 
   S.queue = shuffle(selected).slice(0, n);
@@ -5927,6 +6087,18 @@ async function runDiag() {
       /* 顺带读一次云端，对比统计 */
       try {
         const d = await cloudPull(false);
+        if (d && d.payload) {
+          const MODLIST = [['calc', '资料分析'], ['formula', '公式选择'], ['pct', '百分比转换'], ['sq', '平方乘方'],
+            ['judge', '判断推理'], ['idiom', '言语成语'], ['political', '政治理论'], ['common', '常识判断']];
+          const lm2 = ((DB.stats && DB.stats.moduleDays) || {})[todayKey()] || {};
+          const cm2 = ((d.payload.stats && d.payload.stats.moduleDays) || {})[todayKey()] || {};
+          const parts = MODLIST.map(function (m) {
+            return m[1] + ' ' + (lm2[m[0]] || 0) + '/' + (cm2[m[0]] || 0);
+          });
+          lines.push('模块进度（本机/云端）：');
+          lines.push('  ' + parts.slice(0, 4).join(' · '));
+          lines.push('  ' + parts.slice(4).join(' · '));
+        }
         if (d && d.payload && d.payload.store) {
           const cs = d.payload.store.stats || {};
           lines.push('');
@@ -5965,19 +6137,24 @@ async function cloudMerge() {
   toast('正在合并云端…');
   const d = await cloudPull(true);
   if (!d) return;
-  try {
-    const localRec = Object.keys((store && store.cards) || {}).length;
-    const cloudRec = Object.keys(((d.payload && d.payload.store && d.payload.store.cards) || {})).length;
-    const merged = mergeStore(store, (d.payload && d.payload.store) || {});
-    store = merged;
-    try { save(); } catch (e) {}
-    __cardsDirty = true;
-    CB = DB;
-    saveDB();
-    setTimeout(function () { try { render(); } catch (e) {} }, 80);
-    toast('已合并：本机 ' + localRec + ' + 云端 ' + cloudRec + ' → 合计 ' + Object.keys(merged.cards).length + ' 条');
-    setTimeout(function () { cloudPush(false); }, 1500);
-  } catch (e) { toast('合并失败：' + (e && e.message)); }
+  /* 全量合并：卡片并集、复习排程、模块进度、统计、刷题记录、图片，一次全上 */
+  if (!applyCloud(d, true)) { toast('云端数据无法解析'); return; }
+  setTimeout(function () {
+    const cards = (CB.cards || []).length;
+    const learned = Object.keys(CB.sched || {}).length;
+    const tk = todayKey();
+    const md = (DB.stats && DB.stats.moduleDays && DB.stats.moduleDays[tk]) || {};
+    const mods = Object.keys(md).filter(function (k) { return (md[k] || 0) > 0; }).length;
+    const today = (store.stats && store.stats.days && store.stats.days[tk]) || 0;
+    const logN = (DB.logs || []).length;
+    const sessN = (DB.sessions || []).length;
+    const wrongN = Object.keys(store.cards || {}).filter(function (k) {
+      const c = store.cards[k];
+      return c && (c.inWrong === true || (c.inWrong !== false && (c.w || 0) > 0));
+    }).length;
+    toast('已合并 · 卡片 ' + cards + ' · 已学 ' + learned + ' · 今日 ' + today + ' · 模块 ' + mods + ' 项 · 日志 ' + logN + ' · 模考 ' + sessN + ' · 错题 ' + wrongN);
+    setTimeout(function () { cloudPush(false); }, 1600);
+  }, 450);
 }
 
 async function cloudRestore() {
@@ -5996,29 +6173,63 @@ async function cloudRestore() {
 }
 
 /* 启动时检查云端是否有别的设备传过新数据 */
+/* 云端在任一维度比本机丰富就值得合并 */
+function cloudHasMore(d) {
+  try {
+    const p = d.payload || {};
+    const cs = p.store || {};
+    const localRec = Object.keys((store && store.cards) || {}).length;
+    const cloudRec = Object.keys(cs.cards || {}).length;
+    if (cloudRec > localRec) return true;
+    /* 逐模块逐日期比对，只要有一项云端更多就值得合并 */
+    const lm = (DB.stats && DB.stats.moduleDays) || {};
+    const cm = (p.stats && p.stats.moduleDays) || {};
+    for (const dt in cm) {
+      const a = cm[dt] || {}, b = lm[dt] || {};
+      for (const mk in a) {
+        if (typeof a[mk] === 'number' && a[mk] > (b[mk] || 0)) return true;
+      }
+    }
+    const ld = (DB.stats && DB.stats.days) || {};
+    const cd = (p.stats && p.stats.days) || {};
+    for (const dt2 in cd) {
+      if (typeof cd[dt2] === 'number' && cd[dt2] > (ld[dt2] || 0)) return true;
+    }
+    const localSched = Object.keys(DB.sched || {}).length;
+    const cloudSched = Object.keys(p.sched || {}).length;
+    if (cloudSched > localSched) return true;
+    const localCards = (DB.cards || []).length;
+    const cloudCards = (p.cards || []).length;
+    if (cloudCards > localCards + 5) return true;
+    return false;
+  } catch (e) { return false; }
+}
+
 async function pullOnBoot() {
   try {
     if (!cloudCfg().auto) return;
     if (!geConf() && !sbConf() && !ghConf()) return;
     const d = await cloudPull(false);
     if (!d || !d.at) return;
-    const cloudAt = new Date(String(d.at).replace(/-/g, '/')).getTime();
-    const local = DB.settings.lastPush || 0;
-    if (!cloudAt || cloudAt <= local + 60000) return;
     __cloudNewer = d;
-    const localRec = Object.keys((store && store.cards) || {}).length;
-    const cloudRec = Object.keys(((d.payload && d.payload.store && d.payload.store.cards) || {})).length;
-    /* 本机没有刷题记录、云端有：直接拉下来，不用问 */
-    if (localRec === 0 && cloudRec > 0) {
-      if (applyCloud(d, true)) { toast('已从云端同步 ' + cloudRec + ' 条刷题记录'); return; }
-    }
-    showSyncHint(cloudAt);
+    if (!cloudHasMore(d)) return;
+    if (applyCloud(d, true)) { toast('已合并云端数据'); return; }
+    showSyncHint(new Date(String(d.at).replace(/-/g, '/')).getTime());
   } catch (e) {}
 }
 
 let __cloudNewer = null;
 let __lastCloudCheck = 0;
 let __cloudBusy = false;
+
+/* 从后台切回来时立刻检查云端，手机上刷完切到平板就能接上 */
+document.addEventListener('visibilitychange', function () {
+  try {
+    if (document.hidden) return;
+    __lastCloudCheck = 0;
+    setTimeout(function () { maybeSyncFromCloud(); }, 800);
+  } catch (e) {}
+});
 
 /* 进入页面时也检查一次云端（5 分钟最多一次），避免只在启动时错过 */
 function maybeSyncFromCloud() {
@@ -6028,26 +6239,16 @@ function maybeSyncFromCloud() {
     if (!c.auto) return;
     if (!geConf() && !sbConf() && !ghConf()) return;
     const now = Date.now();
-    if (now - __lastCloudCheck < 5 * 60 * 1000) return;
+    if (now - __lastCloudCheck < 45 * 1000) return;
     __lastCloudCheck = now;
     __cloudBusy = true;
     cloudPull(false).then(function (d) {
       __cloudBusy = false;
       if (!d || !d.at) return;
-      const cloudAt = new Date(String(d.at).replace(/-/g, '/')).getTime();
-      const local = DB.settings.lastPush || 0;
-      if (!cloudAt || cloudAt <= local + 60000) return;
-      const localRec = Object.keys((store && store.cards) || {}).length;
-      const cloudRec = Object.keys(((d.payload && d.payload.store && d.payload.store.cards) || {})).length;
-      if (localRec === 0 && cloudRec > 0) {
-        __cloudNewer = d;
-        if (applyCloud(d, true)) toast('已从云端同步 ' + cloudRec + ' 条刷题记录');
-        return;
-      }
-      if (cloudRec > localRec) {
-        __cloudNewer = d;
-        showSyncHint(cloudAt);
-      }
+      __cloudNewer = d;
+      if (!cloudHasMore(d)) return;
+      if (applyCloud(d, true)) { toast('已合并云端数据'); return; }
+      showSyncHint(new Date(String(d.at).replace(/-/g, '/')).getTime());
     }).catch(function () { __cloudBusy = false; });
   } catch (e) { __cloudBusy = false; }
 }
@@ -6065,11 +6266,19 @@ function applyCloud(d, silent) {
       return order.map(function (id) { return map[id]; });
     })();
     DB = Object.assign(defDB(), {
-      cards: mergedCards, decks: nd.decks || defDB().decks,
-      sched: nd.sched, logs: nd.logs, sessions: nd.sessions, stats: nd.stats
+      cards: mergedCards,
+      decks: mergeDecks(DB.decks, nd.decks),
+      sched: mergeSched(DB.sched, nd.sched),
+      logs: mergeLogs(DB.logs, nd.logs),
+      sessions: mergeSessions(DB.sessions, nd.sessions),
+      stats: mergeDBStats(DB.stats, nd.stats)
     });
     DB.settings = Object.assign(defDB().settings, nd.settings);
     DB.mods = Object.assign(modsDefault(), nd.mods || {});
+    if (nd.idiomRel && typeof nd.idiomRel === 'object') {
+      DB.idiomRel = Object.assign({}, nd.idiomRel);
+      DB.idiomRelV = nd.idiomRelV || IDIOM_REL_VER;
+    }
     if (d.payload.store && d.payload.store.cards) {
       store = mergeStore(store, d.payload.store);
       try { save(); } catch (e) {}
@@ -6100,8 +6309,17 @@ function showSyncHint(cloudAt) {
       if (!d) { cloudRestore(); return; }
       const nd = normalizeBackup(d.payload) || { cards: d.payload.cards, sched: d.payload.sched || {}, settings: d.payload.settings || {} };
       DB = Object.assign(defDB(), {
-        cards: nd.cards, decks: nd.decks || defDB().decks,
-        sched: nd.sched, logs: nd.logs, sessions: nd.sessions, stats: nd.stats
+        cards: (function () {
+          const map = {}, order = [];
+          ((DB.cards) || []).forEach(function (c) { if (c && c.id != null && !map[c.id]) { map[c.id] = c; order.push(c.id); } });
+          ((nd.cards) || []).forEach(function (c) { if (c && c.id != null) { if (!map[c.id]) order.push(c.id); map[c.id] = c; } });
+          return order.map(function (id) { return map[id]; });
+        })(),
+        decks: mergeDecks(DB.decks, nd.decks),
+        sched: mergeSched(DB.sched, nd.sched),
+        logs: mergeLogs(DB.logs, nd.logs),
+        sessions: mergeSessions(DB.sessions, nd.sessions),
+        stats: mergeDBStats(DB.stats, nd.stats)
       });
       DB.settings = Object.assign(defDB().settings, nd.settings);
       DB.mods = Object.assign(modsDefault(), nd.mods || {});
@@ -6142,8 +6360,17 @@ function showSyncHintOld(cloudAt) {
     confirmSheet('同步云端数据', '云端数据会覆盖这台设备上的内容，确定？', '覆盖并同步', function () {
       const nd = normalizeBackup(d.payload) || { cards: d.payload.cards, sched: d.payload.sched || {}, settings: d.payload.settings || {} };
       DB = Object.assign(defDB(), {
-        cards: nd.cards, decks: nd.decks || defDB().decks,
-        sched: nd.sched, logs: nd.logs, sessions: nd.sessions, stats: nd.stats
+        cards: (function () {
+          const map = {}, order = [];
+          ((DB.cards) || []).forEach(function (c) { if (c && c.id != null && !map[c.id]) { map[c.id] = c; order.push(c.id); } });
+          ((nd.cards) || []).forEach(function (c) { if (c && c.id != null) { if (!map[c.id]) order.push(c.id); map[c.id] = c; } });
+          return order.map(function (id) { return map[id]; });
+        })(),
+        decks: mergeDecks(DB.decks, nd.decks),
+        sched: mergeSched(DB.sched, nd.sched),
+        logs: mergeLogs(DB.logs, nd.logs),
+        sessions: mergeSessions(DB.sessions, nd.sessions),
+        stats: mergeDBStats(DB.stats, nd.stats)
       });
       DB.settings = Object.assign(defDB().settings, nd.settings);
       DB.mods = Object.assign(modsDefault(), nd.mods || {});
@@ -6168,7 +6395,7 @@ function scheduleSync() {
   const c = cloudCfg();
   if (!c.auto || (!ghConf() && !sbConf() && !geConf())) return;
   clearTimeout(_autoSyncT);
-  _autoSyncT = setTimeout(() => { cloudPush(true); }, 90000);
+  _autoSyncT = setTimeout(() => { cloudPush(true); }, 10000);
 }
 
 function cloudConfigFlow() {
@@ -7970,8 +8197,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.9.0';
-const BUILD_STAMP = '11-08 23:05';
+const APP_VERSION = '1.11.0';
+const BUILD_STAMP = '11-09 00:35';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
