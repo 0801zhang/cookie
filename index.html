@@ -4329,7 +4329,7 @@ function viewSettings() {
       <span style="color:var(--dim);">›</span>
     </button>
     <div class="setrow">
-      <span class="g"><b>自动同步</b><span>做题后 10 秒自动上传</span></span>
+      <span class="g"><b>自动同步</b><span>做题后 45 秒自动上传，不占用操作</span></span>
       <button class="switch ${cc.auto ? 'on' : ''}" data-cloud-auto><i></i></button>
     </div>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:4px 0 2px;">
@@ -4809,12 +4809,13 @@ function viewStudy() {
             <div class="fhint">${ST.timeout ? '⏱ 超时，记为完全不会' : '点击卡片，或点下方按钮翻面'}</div>
           </div>
           <div class="face back">
-            <div class="fq" style="margin-bottom:14px; word-break:break-word; overflow-wrap:anywhere;">${tex(c.front)}</div>
+            <div class="bk-q">${tex(c.front)}</div>
+            ${cloze && ST.clozeAns ? `<div class="bk-mine">你写的：${escHTML(ST.clozeAns)}</div>` : ''}
             <span class="ftag">${c.deck} · 答案</span>
             <div class="fa">${tex(c.back)}</div>
-            ${cloze && ST.clozeAns ? `<div class="fnote" style="color:var(--dim);">你写的：${escHTML(ST.clozeAns)}</div>` : ''}
             ${c.note ? `<div class="fnote">${tex(c.note)}</div>` : ''}
-            ${c.trap ? `<div class="ftrap">💡 ${tex(c.trap)}</div>` : ''}
+            ${c.trap ? `<div class="ftrap">💡 易混提醒：${tex(c.trap)}</div>` : ''}
+            ${pairBlockFor(c)}
             ${c.imgKey ? `<div class="card-img" data-imgkey="${escAttr(c.imgKey)}"></div>` : ''}
             <div class="fsrc">上次：${lastSeen(c.id)}</div>
           </div>
@@ -4825,6 +4826,28 @@ function viewStudy() {
       ? (ST.awaitNext ? '<button class="btn-main" id="nextBtn" style="margin-top:12px;">下一张 →</button>' : ratesHTML())
       : '<button class="btn-main" id="flipBtn" style="margin-top:12px;">翻面看答案</button>'}
   </div>`;
+}
+
+/* 找出与这道题相关的易混对照 */
+function pairBlockFor(c) {
+  try {
+    if (!c) return '';
+    const txt = [c.front, c.back, c.tag, c.deck, c.note, c.trap].filter(Boolean).join(' ');
+    const all = (function () {
+      try { const m = M(); if (Array.isArray(m.pairs) && m.pairs.length) return m.pairs; } catch (e) {}
+      return PAIR_SEED;
+    })();
+    const hits = all.filter(function (p) {
+      return p && p.a && p.b && (txt.indexOf(p.a) >= 0 || txt.indexOf(p.b) >= 0);
+    }).slice(0, 2);
+    if (!hits.length) return '';
+    return '<div class="pair-box"><div class="pair-hd">容易混的</div>' + hits.map(function (p) {
+      return '<div class="pair-item"><div class="pair-nm">' + escHTML(p.a) + ' <i>vs</i> ' + escHTML(p.b) + '</div>'
+        + '<div class="pair-df">' + escHTML(p.diff || '') + '</div>'
+        + (p.tip ? '<div class="pair-tip">💡 ' + escHTML(p.tip) + '</div>' : '')
+        + '</div>';
+    }).join('') + '</div>';
+  } catch (e) { return ''; }
 }
 
 function lastSeen(id) {
@@ -6511,7 +6534,7 @@ function scheduleSync() {
   const c = cloudCfg();
   if (!c.auto || (!ghConf() && !sbConf() && !geConf())) return;
   clearTimeout(_autoSyncT);
-  _autoSyncT = setTimeout(() => { cloudPush(true); }, 10000);
+  _autoSyncT = setTimeout(() => { cloudPush(true); }, 45000);
 }
 
 function cloudConfigFlow() {
@@ -6950,13 +6973,28 @@ function mountOneFab(id, glyph, onClick, bg, defGap) {
         mm.fabs[el.id] = { x: r.left, y: r.top };
         try { saveDB(); } catch (err) {}
       } else {
-        try { if (el._fabClick) el._fabClick(); }
-        catch (err) { try { toast('打开失败：' + ((err && err.message) || err)); } catch (e2) {} }
+        if (el._fabFire) el._fabFire();
+        else { try { if (el._fabClick) el._fabClick(); } catch (err) {} }
       }
     };
 
+    let handled = false;
+    const fire = function () {
+      if (handled) return;
+      handled = true;
+      setTimeout(function () { handled = false; }, 500);
+      try { if (el._fabClick) el._fabClick(); }
+      catch (err) { try { toast('打开失败：' + ((err && err.message) || err)); } catch (e2) {} }
+    };
+    el._fabFire = fire;
+
     el.addEventListener('pointerup', finish);
     el.addEventListener('pointercancel', function () { dragging = false; release(); });
+    /* 兜底：万一 pointerup 没触发，click 也能打开 */
+    el.addEventListener('click', function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      fire();
+    });
 
     window.addEventListener('resize', function () {
       const r = el.getBoundingClientRect();
@@ -8327,8 +8365,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.13.2';
-const BUILD_STAMP = '11-09 05:40';
+const APP_VERSION = '1.13.5';
+const BUILD_STAMP = '11-09 06:35';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8994,35 +9032,32 @@ function openCardMenu(c) {
   @media (min-width:700px){
     #app{max-width:1060px; margin-left:auto; margin-right:auto;}
     .tabbar .in{max-width:1060px; margin:0 auto;}
-    .study{max-width:1040px; margin:0 auto;}
-    /* 大屏：整条链路改成自适应高度，内容多也不会被裁 */
-    .stage{flex:none; min-height:0; perspective:none;}
-    .stage .flip{position:static!important; inset:auto!important; height:auto!important;}
-    .stage .flip-inner{display:flex; transform:none!important; height:auto!important; gap:16px;}
-    .stage .flip-inner .face{position:static!important; transform:none!important;
-      backface-visibility:visible!important; opacity:1!important; flex:1; width:auto;
-      max-height:none!important; overflow:visible!important; height:auto!important;
-      box-sizing:border-box; justify-content:flex-start;}
+    .study{max-width:820px; margin:0 auto;}
+    /* 大屏：保持翻面模式，一次只显示一面，只把卡片限宽居中 */
+    .face{max-width:760px; left:0; right:0; margin:0 auto;}
     .list{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; align-items:start;}
     /* 设置页：按块分栏，避免分组被拆到两列造成错位 */
     .setcols{max-width:720px; margin:0 auto;}
     .setcols .list{display:block;}
     .setcols .setrow{display:flex; width:100%;}
   }
-  /* 横屏：问题与答案左右并排，各自够高 */
-  @media (min-width:700px) and (orientation:landscape){
-    .stage .flip-inner{flex-direction:row; align-items:stretch;}
-    .stage .flip-inner .face{min-height:340px; padding:26px 22px;}
-    .stage .flip-inner .face.back{border-left:1px dashed #ffdcea; border-radius:0 22px 22px 0;}
-    .stage .flip-inner .face:first-child{border-radius:22px 0 0 22px;}
-  }
-  /* 竖屏：问题在上、答案在下，各占满宽度 */
-  @media (min-width:700px) and (orientation:portrait){
-    .stage .flip-inner{flex-direction:column; align-items:stretch;}
-    .stage .flip-inner .face{min-height:240px; padding:26px 24px;}
-    .stage .flip-inner .face.back{border-top:1px dashed #ffdcea;}
-  }
+
+
   /* 错因弹窗：两列网格，每项独立圆角，间距均匀 */
+  /* 背诵卡片背面：问题 / 答案 / 易混 三段分明 */
+  .bk-q{font-size:13px; color:var(--sub); line-height:1.7; padding:12px 14px;
+    border-radius:14px; background:var(--pink-soft); border:1px solid var(--line);
+    margin-bottom:16px; word-break:break-word; overflow-wrap:anywhere;}
+  .bk-mine{font-size:12px; color:var(--dim); line-height:1.6; margin:-8px 0 14px 2px;}
+  .pair-box{margin-top:16px; padding:13px 15px; border-radius:14px;
+    background:#fff9f2; border:1px dashed #ffdfc2;}
+  .pair-hd{font-size:11px; color:#c98b4b; font-weight:600; letter-spacing:.3px; margin-bottom:8px;}
+  .pair-item + .pair-item{margin-top:11px; padding-top:11px; border-top:1px dashed #ffdfc2;}
+  .pair-nm{font-size:13.5px; font-weight:600; color:#b5762f; line-height:1.5;}
+  .pair-nm i{font-style:normal; font-weight:400; color:#d1a06a; margin:0 3px; font-size:12px;}
+  .pair-df{font-size:12px; color:#8a5a2b; line-height:1.75; margin-top:5px;}
+  .pair-tip{font-size:11.5px; color:#b5762f; line-height:1.6; margin-top:5px;}
+
   /* 统计页底部台账入口 */
   .ledger-cta{display:flex; flex-direction:column; align-items:flex-start; gap:5px;
     width:100%; box-sizing:border-box; padding:16px 18px; margin:0 0 4px;
@@ -9081,17 +9116,12 @@ function openCardMenu(c) {
 
   @media (min-width:700px){
     /* 瀑布流：两张卡片不等高也能自然错落，不会留大片空白 */
-    .setcols{display:grid; grid-template-columns:1fr 1fr; gap:0 20px; align-items:start;
-      max-width:1020px; margin:0 auto;}
-    .setcols > *:not(.setblock):not(.setcol){grid-column:1 / -1;}
-    .setcol{display:flex; flex-direction:column; min-width:0;}
+    /* 设置页保持单列，大屏只限制内容宽度，不做左右分栏 */
+    .setcols{display:block; max-width:720px; margin:0 auto;}
     .list .setrow, .list .crow{min-width:0;}
     .setrow{padding-left:0; padding-right:0;}
     #app > .list > .setrow:only-child{grid-column:1 / -1;}
     .mode-grid{grid-template-columns:repeat(4,minmax(0,1fr));}
-  }
-  @media (min-width:700px) and (orientation:landscape){
-    .stage .flip-inner .face{min-height:300px;}
   }
   html, body{max-width:100%; overflow-x:hidden;}
   .boot-splash{min-height:78vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;}
@@ -10579,7 +10609,7 @@ const MOD = {
   afterRender(view) {
     mountFab();
     try { maybeSyncFromCloud(); } catch (e) {}
-    try { layoutSettingsColumns(); } catch (e) {}
+
     try { applyLayout(); } catch (e) {}
     try {
       const sd = sprintData();
