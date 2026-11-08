@@ -3558,6 +3558,7 @@ function viewHome() {
   <div class="hero">
     <h1>今天刷题了吗</h1>
     <p>速算靠肌肉记忆，常识靠反复偶遇。<br>一天 10 分钟，足够。</p>
+    <div style="margin-top:8px; font-size:10.5px; color:var(--dim); opacity:.55;">v${typeof APP_VERSION !== 'undefined' ? APP_VERSION : '?'} · ${typeof BUILD_STAMP !== 'undefined' ? BUILD_STAMP : ''}</div>
   </div>
 
   <div class="stat-row">
@@ -5889,6 +5890,40 @@ async function pullOnBoot() {
 }
 
 let __cloudNewer = null;
+let __lastCloudCheck = 0;
+let __cloudBusy = false;
+
+/* 进入页面时也检查一次云端（5 分钟最多一次），避免只在启动时错过 */
+function maybeSyncFromCloud() {
+  try {
+    if (__cloudBusy) return;
+    const c = cloudCfg();
+    if (!c.auto) return;
+    if (!geConf() && !sbConf() && !ghConf()) return;
+    const now = Date.now();
+    if (now - __lastCloudCheck < 5 * 60 * 1000) return;
+    __lastCloudCheck = now;
+    __cloudBusy = true;
+    cloudPull(false).then(function (d) {
+      __cloudBusy = false;
+      if (!d || !d.at) return;
+      const cloudAt = new Date(String(d.at).replace(/-/g, '/')).getTime();
+      const local = DB.settings.lastPush || 0;
+      if (!cloudAt || cloudAt <= local + 60000) return;
+      const localRec = Object.keys((store && store.cards) || {}).length;
+      const cloudRec = Object.keys(((d.payload && d.payload.store && d.payload.store.cards) || {})).length;
+      if (localRec === 0 && cloudRec > 0) {
+        __cloudNewer = d;
+        if (applyCloud(d, true)) toast('已从云端同步 ' + cloudRec + ' 条刷题记录');
+        return;
+      }
+      if (cloudRec > localRec) {
+        __cloudNewer = d;
+        showSyncHint(cloudAt);
+      }
+    }).catch(function () { __cloudBusy = false; });
+  } catch (e) { __cloudBusy = false; }
+}
 
 /* 应用云端数据（silent=true 时不弹确认） */
 function applyCloud(d, silent) {
@@ -7785,8 +7820,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.7.1';
-const BUILD_STAMP = '2026-11-09 18:30';
+const APP_VERSION = '1.8.2';
+const BUILD_STAMP = '11-08 22:05';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8464,19 +8499,21 @@ function openCardMenu(c) {
     .setcols .list{display:block;}
     .setcols .setrow{display:flex; width:100%;}
   }
-  @media (min-width:800px){
+  /* 卡片样式：所有尺寸通用，手机上也是卡片，不会再贴边 */
+  .setblock{background:var(--card); border:1px solid var(--line); border-radius:20px;
+    padding:8px 20px 16px; margin:0 0 16px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
+  .setblock .sec-label{margin:14px 0 4px; padding-left:0; font-weight:600; letter-spacing:.2px;}
+  .setblock .list{background:transparent; border:none; border-radius:0;}
+  .setblock .setrow{padding-left:0; padding-right:0; padding-top:14px; padding-bottom:14px;}
+  .setblock .setrow:first-child{padding-top:6px;}
+  .setblock .setrow:last-child{padding-bottom:2px;}
+  .setblock:last-child{margin-bottom:0;}
+
+  @media (min-width:700px){
     /* 瀑布流：两张卡片不等高也能自然错落，不会留大片空白 */
     .setcols{column-count:2; column-gap:20px; column-fill:balance; max-width:1020px; margin:0 auto;}
     .setcols > *:not(.setblock){column-span:all; -webkit-column-span:all;}
-    .setblock{break-inside:avoid; -webkit-column-break-inside:avoid;
-      background:var(--card); border:1px solid var(--line); border-radius:20px;
-      padding:8px 20px 16px; margin:0 0 18px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
-    .setblock .sec-label{margin:14px 0 4px; padding-left:0; font-weight:600; letter-spacing:.2px;}
-    .setblock .list{background:transparent; border:none; border-radius:0;}
-    .setblock .setrow{padding-left:0; padding-right:0; padding-top:14px; padding-bottom:14px;}
-    .setblock .setrow:first-child{padding-top:6px;}
-    .setblock .setrow:last-child{padding-bottom:2px;}
-    .setblock:last-child{margin-bottom:0;}
+    .setblock{break-inside:avoid; -webkit-column-break-inside:avoid;}
     .list .setrow, .list .crow{min-width:0;}
     .setrow{padding-left:0; padding-right:0;}
     #app > .list > .setrow:only-child{grid-column:1 / -1;}
@@ -9949,6 +9986,7 @@ function showDupGroup(groups, idx) {
 const MOD = {
   afterRender(view) {
     mountFab();
+    try { maybeSyncFromCloud(); } catch (e) {}
     try { applyLayout(); } catch (e) {}
     try {
       const sd = sprintData();
