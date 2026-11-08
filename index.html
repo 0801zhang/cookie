@@ -7785,8 +7785,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.7.0';
-const BUILD_STAMP = '2026-11-09 18:05';
+const APP_VERSION = '1.7.1';
+const BUILD_STAMP = '2026-11-09 18:30';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -10470,11 +10470,14 @@ var CARDSDB = (function () {
 })();
 
 var CARDSDB_OK = null;
+var __cardsReady = false;
 
 /* 覆盖：卡片写 IndexedDB，失败才退回 localStorage */
 function saveCards() {
   /* 早期调用时 IndexedDB 封装可能还没初始化，先跳过，改动标记保留 */
   if (!CARDSDB) { __cardsDirty = true; return; }
+  /* 卡片还没从 IndexedDB 读出来时不要写，否则会用空库覆盖真实数据 */
+  if (!__cardsReady) { __cardsDirty = true; return; }
   const json = JSON.stringify(DB.cards || []);
   __cardsDirty = false;
   if (CARDSDB_OK === false) {
@@ -10491,7 +10494,8 @@ function saveCards() {
 
 /* 启动时加载卡片：优先 IndexedDB，首次则把 localStorage 的旧数据搬过去 */
 async function loadCardsAsync() {
-  if (!CARDSDB) return;
+  if (!CARDSDB) { __cardsReady = true; return; }
+  try {
   let idbRaw = null;
   try { idbRaw = await CARDSDB.get('all'); CARDSDB_OK = true; }
   catch (e) { CARDSDB_OK = false; }
@@ -10514,6 +10518,7 @@ async function loadCardsAsync() {
     }
     return;
   }
+  } finally { __cardsReady = true; }
 }
 
 /* ==========================================================================
@@ -11332,14 +11337,28 @@ function showDupGroup(groups, idx) {
   });
 }
 
+globalThis.__booted = false;
+function firstPaint() {
+  if (globalThis.__booted) return;
+  globalThis.__booted = true;
+  try { bootCards(); } catch (e) {}
+  try { applyTheme(); } catch (e) {}
+  try { render(); } catch (e) {}
+}
+/* 兜底：无论加载卡在哪，3 秒后都要出页面 */
+setTimeout(firstPaint, 3000);
+
 globalThis.__startPromise = (async function () {
-  try { await loadCardsAsync(); } catch (e) {}
-  bootCards();
+  try {
+    await Promise.race([
+      loadCardsAsync(),
+      new Promise(function (r) { (globalThis.__realST || setTimeout)(r, 2200); })
+    ]);
+  } catch (e) {}
+  firstPaint();
   autoSnapshot();
   initSnapMigrate();
   setTimeout(function () { try { recompressSnaps(); } catch (e) {} }, 4000);
-  applyTheme();
-  render();
   setTimeout(checkRemind, 3000);
   setTimeout(pullOnBoot, 2500);
   /* 启动后体检：localStorage 偏高就先清理一轮，不等写到失败 */
