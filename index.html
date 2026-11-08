@@ -134,6 +134,12 @@ input{font-family:inherit;}
 .input-line .unit{font-size:20px; color:var(--sub); font-weight:600; flex-shrink:0;}
 
 .options{display:flex; flex-direction:column; gap:10px;}
+/* 平板：选项改 2×2 网格，避免细长条 */
+@media (min-width:700px){
+  .options{display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px;}
+  .options .opt{min-height:78px; padding:18px 20px; font-size:16px; border-radius:16px; align-items:center;}
+  .options .opt .key{width:28px; height:28px; border-radius:8px; font-size:13.5px;}
+}
 .opt{
   display:flex; align-items:center; gap:13px; width:100%; text-align:left;
   background:var(--card); border:1.5px solid var(--line); border-radius:14px;
@@ -205,6 +211,7 @@ input{font-family:inherit;}
 
 /* ---------- 卡片学习 ---------- */
 .study{flex:1; display:flex; flex-direction:column; min-height:calc(100vh - 150px);}
+@supports (height:100dvh){ .study{min-height:calc(100dvh - 150px);} }
 .study-bar{display:flex; align-items:center; gap:12px; margin-bottom:10px;}
 .pbar{flex:1; height:5px; background:var(--trace); border-radius:3px; overflow:hidden;}
 .pbar i{display:block; height:100%; background:linear-gradient(90deg,#ffa8cb,#ff5f9c); border-radius:3px; transition:width .3s;}
@@ -271,10 +278,12 @@ input{font-family:inherit;}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 .sheet{
   width:100%; max-width:560px; background:var(--card); border-radius:22px 22px 0 0;
-  padding:20px 18px calc(76px + env(safe-area-inset-bottom)); max-height:84vh; overflow-y:auto;
+  padding:22px 20px calc(22px + env(safe-area-inset-bottom)); max-height:86vh; overflow-y:auto;
+  overscroll-behavior:contain;
   animation:upIn .26s cubic-bezier(.2,.9,.3,1);
 }
 @keyframes upIn{from{transform:translateY(30px); opacity:.5}to{transform:translateY(0); opacity:1}}
+.sheet .list{display:block; grid-template-columns:none;}
 .sheet h3{font-size:17px; font-weight:700; margin-bottom:5px;}
 .sheet .sdesc{font-size:12.5px; color:var(--dim); line-height:1.7; margin-bottom:16px;}
 .field{margin-bottom:13px;}
@@ -292,13 +301,14 @@ input{font-family:inherit;}
 .toast{
   position:fixed; left:50%; bottom:96px; transform:translateX(-50%);
   background:rgba(74,51,64,.93); color:#fff; font-size:13.5px; padding:11px 18px;
-  border-radius:12px; z-index:200; animation:fadeIn .18s; white-space:nowrap; max-width:86vw;
+  border-radius:12px; z-index:200; animation:fadeIn .18s; max-width:86vw;
+  text-align:center; line-height:1.5; word-break:break-word;
 }
 
 /* LaTeX */
-.frac{display:inline-flex; flex-direction:column; vertical-align:middle; text-align:center; margin:0 2px; font-size:.86em; line-height:1.16;}
-.frac b{border-bottom:1.3px solid currentColor; padding:0 4px; font-weight:inherit;}
-.frac i{font-style:normal; padding:0 4px;}
+.frac{display:inline-flex; flex-direction:column; align-items:center; vertical-align:middle; text-align:center; margin:0 3px; font-size:.86em; line-height:1.3;}
+.frac b{display:block; border-bottom:1.3px solid currentColor; padding:0 5px 1px; font-weight:600; line-height:1.25;}
+.frac i{display:block; font-style:normal; padding:1px 5px 0; line-height:1.25;}
 sup{font-size:.7em; vertical-align:super; line-height:0;}
 sub{font-size:.7em; vertical-align:sub; line-height:0;}
 
@@ -383,14 +393,15 @@ sub{font-size:.7em; vertical-align:sub; line-height:0;}
 .setrow{
   display:flex; align-items:center; gap:12px; background:var(--card);
   border:1px solid var(--line); padding:13px 14px;
+  font:inherit; line-height:1.4; color:inherit; text-align:left; width:100%;
 }
 .setrow + .setrow{border-top:none;}
 .setrow:first-child{border-radius:14px 14px 0 0;}
 .setrow:last-child{border-radius:0 0 14px 14px;}
 .setrow:only-child{border-radius:14px;}
 .setrow .g{flex:1; min-width:0;}
-.setrow .g b{font-size:14px; font-weight:600; display:block;}
-.setrow .g span{font-size:11px; color:var(--dim); display:block; margin-top:2px;}
+.setrow .g b{font-size:14px; font-weight:600; display:block; line-height:1.35; margin:0;}
+.setrow .g span{font-size:11px; color:var(--dim); display:block; line-height:1.45; margin-top:3px;}
 .switch{
   width:44px; height:26px; border-radius:13px; background:var(--trace); position:relative;
   transition:.2s; flex-shrink:0;
@@ -3887,12 +3898,15 @@ function viewResult() {
 
 /* ---------------- 错题本 ---------------- */
 function viewWrong() {
-  /* 按「题干+答案」去重：题库里同一道题若有多个 id，错题本也只显示一条 */
+  /* 同一道题若存在多个 id，错题本只显示一条；题干不完整时不做去重，避免误伤同模板的题 */
   const seenQ = new Set();
   const ids = Object.keys(store.cards).filter(k => isWrongCard(store.cards[k]) && !isDel(k)).filter(function (k) {
     const c = findCard(k);
     if (!c) return false;
-    const key = String(c.headline || c.q || c.front || '').replace(/\s+/g, '') + '|' + String(c.ans != null ? c.ans : (c.back || ''));
+    const q = String(c.q || c.front || '').replace(/\s+/g, '');
+    if (q.length < 10) return true;
+    const opts = Array.isArray(c.options) ? c.options.join('§') : '';
+    const key = q + '|' + opts + '|' + String(c.ans != null ? c.ans : (c.back || ''));
     if (seenQ.has(key)) return false;
     seenQ.add(key);
     return true;
@@ -4226,6 +4240,39 @@ function viewReport() {
         </div>`).join('')}
     </div>` : '<div class="empty" style="padding:24px;">还没有模考记录</div>'}
   `;
+}
+
+/* 设置页两栏：按实际高度贪心分配，左右尽量一样长 */
+function layoutSettingsColumns() {
+  try {
+    if (S.view !== 'settings') return;
+    const wrap = document.querySelector('.setcols');
+    if (!wrap || wrap.dataset.arranged === '1') return;
+    if (window.innerWidth < 700) return;
+    const all = Array.prototype.slice.call(wrap.children);
+    const blocks = all.filter(function (el) {
+      return el.classList && el.classList.contains('setblock');
+    });
+    if (blocks.length < 2) return;
+
+    const hs = blocks.map(function (b) { return b.getBoundingClientRect().height || 0; });
+    const colA = document.createElement('div'), colB = document.createElement('div');
+    colA.className = 'setcol'; colB.className = 'setcol';
+    let hA = 0, hB = 0;
+    blocks.forEach(function (b, i) {
+      /* 先放短的那一栏，末尾几块高度差会自然抹平 */
+      if (hA <= hB) { colA.appendChild(b); hA += hs[i]; }
+      else { colB.appendChild(b); hB += hs[i]; }
+    });
+    all.forEach(function (el) {
+      if (el.classList && el.classList.contains('setblock')) return;
+      wrap.removeChild(el);
+      wrap.insertBefore(el, wrap.firstChild);
+    });
+    wrap.appendChild(colA);
+    wrap.appendChild(colB);
+    wrap.dataset.arranged = '1';
+  } catch (e) {}
 }
 
 function viewSettings() {
@@ -4816,8 +4863,10 @@ function sheet(html, onMount) {
   mask.className = 'sheet-mask';
   mask.innerHTML = '<div class="sheet">' + html + '</div>';
   document.body.appendChild(mask);
-  mask.addEventListener('click', e => { if (e.target === mask) mask.remove(); });
-  if (onMount) onMount(mask, () => mask.remove());
+  mask.addEventListener('click', function (e) { if (e.target === mask) { try { if (mask.parentNode) mask.parentNode.removeChild(mask); else mask.remove(); } catch (err) {} } });
+  if (onMount) onMount(mask, function () {
+    try { if (mask.parentNode) mask.parentNode.removeChild(mask); else if (mask.remove) mask.remove(); } catch (e) {}
+  });
   return mask;
 }
 
@@ -4935,7 +4984,7 @@ function advance() {
 }
 
 /* ---------------- 学习流程 ---------------- */
-function startCards(deck, mode, fixedList) {
+function startCards(deck, mode, fixedList, forceTimer) {
   clearStudyTimer();
   const now = Date.now();
   let q;
@@ -4964,8 +5013,9 @@ function startCards(deck, mode, fixedList) {
     flipped: false, timeout: false, wrongTag: '', results: [],
     startedAt: Date.now(), cardStart: Date.now(), finishedAt: 0
   };
+  if (forceTimer) ST.forceTimer = forceTimer;
   S.view = 'study';
-  try { TM.start(true); } catch (e) {}
+  try { TM.stop(); TM.start(true); } catch (e) {}
   loadStudyCard();
   render();
 }
@@ -5015,6 +5065,28 @@ function gradeCard(g) {
   if (inSprint) sprintGrade(c.id, g >= 3);
   else rateCard(c.id, g, { ms, tag: ST.wrongTag || '' });
   ST.results.push({ id: c.id, g, ms });
+
+  /* 统计计数：卡片模式以前完全没记，导致「今日已刷」「正确率」「统计页」都不涨 */
+  try {
+    const td = todayKey();
+    if (!store.stats) store.stats = { total: 0, right: 0, days: {}, streakDays: 0, lastDay: '' };
+    store.stats.total = (store.stats.total || 0) + 1;
+    if (!store.stats.days) store.stats.days = {};
+    store.stats.days[td] = (store.stats.days[td] || 0) + 1;
+    if (g >= 3) store.stats.right = (store.stats.right || 0) + 1;
+    if (!DB.stats.moduleDays) DB.stats.moduleDays = {};
+    const md = DB.stats.moduleDays[td] || (DB.stats.moduleDays[td] = {});
+    const mk = ({ calc: 'calc', formula: 'formula', pct: 'pct', sq: 'sq', common: 'common', political: 'political', judge: 'judge', idiom: 'idiom' })[ST.deck];
+    if (mk) md[mk] = (md[mk] || 0) + 1;
+    const lastD = store.stats.lastDay;
+    if (lastD !== td) {
+      const y = dateKey(new Date(Date.now() - DAY));
+      store.stats.streakDays = (lastD === y) ? (store.stats.streakDays || 0) + 1 : 1;
+      store.stats.lastDay = td;
+    }
+    save();
+    saveDB();
+  } catch (e) {}
   try { saveResume(); } catch (e) {}
   if (inSprint && g < 3) {
     const seen = ST.queue.filter(x => x.id === c.id).length;
@@ -5047,6 +5119,7 @@ function gradeCard(g) {
       saveDB();
     }
   } catch (e) {}
+  try { save(); } catch (e) {}
   ST.wrongTag = '';
   if (DB.settings.autoFlip === false) { ST.awaitNext = true; render(); return; }
   advance();
@@ -6391,6 +6464,14 @@ function showSyncHintOld(cloudAt) {
 }
 
 let _autoSyncT;
+let __rszT = null;
+window.addEventListener('resize', function () {
+  clearTimeout(__rszT);
+  __rszT = setTimeout(function () {
+    try { if (S.view === 'settings') render(); } catch (e) {}
+  }, 350);
+});
+
 function scheduleSync() {
   const c = cloudCfg();
   if (!c.auto || (!ghConf() && !sbConf() && !geConf())) return;
@@ -6751,7 +6832,8 @@ function openBh() {
         <button class="bh-star" data-frac="${x.frac}">${x.s ? '★' : '☆'}</button>
       </div>`).join('') : '<div style="padding:30px; text-align:center; color:var(--dim); font-size:13px;">没找到，换个关键词</div>';
     body.querySelectorAll('.bh-star').forEach(b => {
-      b.onclick = () => {
+      b.onclick = (ev) => {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
         const f = b.dataset.frac, m = M();
         const i = m.bh.starred.indexOf(f);
         if (i >= 0) m.bh.starred.splice(i, 1); else m.bh.starred.push(f);
@@ -6759,9 +6841,11 @@ function openBh() {
       };
     });
   };
+  const panel = mask.querySelector('.mod-panel');
+  if (panel) panel.addEventListener('click', function (e) { e.stopPropagation(); });
   mask.querySelector('#bhSearch').oninput = draw;
-  mask.querySelector('[data-close]').onclick = () => mask.remove();
-  mask.addEventListener('click', e => { if (e.target === mask) mask.remove(); });
+  mask.querySelector('[data-close]').onclick = function () { try { if (mask.parentNode) mask.parentNode.removeChild(mask); else mask.remove(); } catch (e) {} };
+  mask.addEventListener('click', function (e) { if (e.target === mask) { try { if (mask.parentNode) mask.parentNode.removeChild(mask); else mask.remove(); } catch (err) {} } });
   draw();
 }
 
@@ -6798,37 +6882,52 @@ function mountOneFab(id, glyph, onClick, bg, defGap) {
   if (saved && typeof saved.x === 'number') setPos(saved.x, saved.y);
   else setPos(window.innerWidth - 68, window.innerHeight - defGap);
 
-  let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0, lx = 0, ly = 0;
+  let pid = null, captured = false;
 
   el.addEventListener('pointerdown', function (e) {
-    dragging = true; moved = false;
-    sx = e.clientX; sy = e.clientY;
+    dragging = true;
+    sx = lx = e.clientX; sy = ly = e.clientY;
+    pid = e.pointerId;
     const r = el.getBoundingClientRect();
     ox = r.left; oy = r.top;
-    try { el.setPointerCapture(e.pointerId); } catch (err) {}
   });
 
   el.addEventListener('pointermove', function (e) {
     if (!dragging) return;
-    const dx = e.clientX - sx, dy = e.clientY - sy;
-    if (!moved && Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
-    moved = true;
+    lx = e.clientX; ly = e.clientY;
+    const dx = lx - sx, dy = ly - sy;
+    /* 超过 12px 才认为是拖动，平板上手指按下的抖动不会被误判 */
+    if (Math.abs(dx) < 12 && Math.abs(dy) < 12) return;
+    /* 只有真的开始拖了才捕获指针 */
+    if (!captured && pid !== null) {
+      try { el.setPointerCapture(pid); captured = true; } catch (err) {}
+    }
     setPos(ox + dx, oy + dy);
   });
+
+  function release() {
+    if (captured && pid !== null) {
+      try { el.releasePointerCapture(pid); } catch (err) {}
+    }
+    captured = false; pid = null;
+  }
 
   function finish() {
     if (!dragging) return;
     dragging = false;
-    if (moved) {
+    release();
+    const dist = Math.sqrt((lx - sx) * (lx - sx) + (ly - sy) * (ly - sy));
+    if (dist > 12) {
       const r = el.getBoundingClientRect();
       m.fabs[id] = { x: r.left, y: r.top };
-      saveDB();
+      try { saveDB(); } catch (err) {}
     } else {
-      try { onClick(); } catch (err) {}
+      try { onClick(); } catch (err) { try { toast('打开失败：' + ((err && err.message) || err)); } catch (e2) {} }
     }
   }
   el.addEventListener('pointerup', finish);
-  el.addEventListener('pointercancel', function () { dragging = false; });
+  el.addEventListener('pointercancel', function () { dragging = false; release(); });
 
   window.addEventListener('resize', function () {
     const r = el.getBoundingClientRect();
@@ -6975,8 +7074,8 @@ function openDraft() {
       mask.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('on', x === b && (t === 'pen' || t === 'text')));
     };
   });
-  mask.querySelector('[data-close]').onclick = () => mask.remove();
-  mask.addEventListener('click', e => { if (e.target === mask) mask.remove(); });
+  mask.querySelector('[data-close]').onclick = function () { try { if (mask.parentNode) mask.parentNode.removeChild(mask); else mask.remove(); } catch (e) {} };
+  mask.addEventListener('click', function (e) { if (e.target === mask) { try { if (mask.parentNode) mask.parentNode.removeChild(mask); else mask.remove(); } catch (err) {} } });
   setTimeout(sizeCanvas, 60);
   drawHist();
   if (list.length) loadItem(list[list.length - 1]);
@@ -8100,7 +8199,7 @@ const EXTRA = {
     display:flex; align-items:center; justify-content:center; font-size:11px; flex-shrink:0;}
   .rb-txt b{display:block; font-size:13.5px;}
   .rb-txt i{font-style:normal; font-size:11.5px; color:var(--dim);}
-  .sync-pill{position:fixed; top:8px; left:50%; transform:translateX(-50%); z-index:1200;
+  .sync-pill{position:fixed; top:calc(8px + env(safe-area-inset-top)); left:50%; transform:translateX(-50%); z-index:1200;
     display:none; align-items:center; gap:7px; padding:6px 13px; border-radius:99px;
     background:rgba(255,255,255,.95); box-shadow:0 4px 14px rgba(0,0,0,.10);
     font-size:11.5px; color:var(--sub); border:1px solid var(--line);}
@@ -8197,8 +8296,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.11.0';
-const BUILD_STAMP = '11-09 00:35';
+const APP_VERSION = '1.12.5';
+const BUILD_STAMP = '11-09 04:40';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8684,8 +8783,8 @@ function openCompare(deck) {
     });
   }
   mask.querySelector('#cmpQ').oninput = e => draw(e.target.value);
-  mask.querySelector('[data-close]').onclick = () => mask.remove();
-  mask.addEventListener('click', e => { if (e.target === mask) mask.remove(); });
+  mask.querySelector('[data-close]').onclick = function () { try { if (mask.parentNode) mask.parentNode.removeChild(mask); else mask.remove(); } catch (e) {} };
+  mask.addEventListener('click', function (e) { if (e.target === mask) { try { if (mask.parentNode) mask.parentNode.removeChild(mask); else mask.remove(); } catch (err) {} } });
   go.onclick = () => {
     if (CMP_SEL.length !== 2) return;
     mask.remove();
@@ -8724,7 +8823,7 @@ function showCompare(idA, idB) {
       <div class="cmp-foot">两边各自点一下翻面 · 用来分辨易混公式</div>
     </div>`;
   document.body.appendChild(mask);
-  mask.querySelector('[data-close]').onclick = () => mask.remove();
+  mask.querySelector('[data-close]').onclick = function () { try { if (mask.parentNode) mask.parentNode.removeChild(mask); else mask.remove(); } catch (e) {} };
   mask.querySelectorAll('.cmp-card').forEach(el => {
     el.onclick = () => el.classList.toggle('on');
   });
@@ -8861,21 +8960,73 @@ function openCardMenu(c) {
 /* ---------- 宽屏双栏 ---------- */
 (function injectWideStyle() {
   const css = `
-  @media (min-width:768px){
+  @media (min-width:700px){
     #app{max-width:1060px; margin-left:auto; margin-right:auto;}
     .tabbar .in{max-width:1060px; margin:0 auto;}
     .study{max-width:1040px; margin:0 auto;}
-    .stage .flip{height:auto;}
-    .stage .flip-inner{display:flex; flex-direction:row; gap:16px; transform:none!important;}
+    /* 大屏：整条链路改成自适应高度，内容多也不会被裁 */
+    .stage{flex:none; min-height:0; perspective:none;}
+    .stage .flip{position:static!important; inset:auto!important; height:auto!important;}
+    .stage .flip-inner{display:flex; transform:none!important; height:auto!important; gap:16px;}
     .stage .flip-inner .face{position:static!important; transform:none!important;
-      backface-visibility:visible!important; opacity:1!important; flex:1; min-height:250px; width:auto;}
-    .stage .flip .face.back{border-left:1px dashed #ffdcea;}
+      backface-visibility:visible!important; opacity:1!important; flex:1; width:auto;
+      max-height:none!important; overflow:visible!important; height:auto!important;
+      box-sizing:border-box; justify-content:flex-start;}
     .list{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; align-items:start;}
     /* 设置页：按块分栏，避免分组被拆到两列造成错位 */
     .setcols{max-width:720px; margin:0 auto;}
     .setcols .list{display:block;}
     .setcols .setrow{display:flex; width:100%;}
   }
+  /* 横屏：问题与答案左右并排，各自够高 */
+  @media (min-width:700px) and (orientation:landscape){
+    .stage .flip-inner{flex-direction:row; align-items:stretch;}
+    .stage .flip-inner .face{min-height:340px; padding:26px 22px;}
+    .stage .flip-inner .face.back{border-left:1px dashed #ffdcea; border-radius:0 22px 22px 0;}
+    .stage .flip-inner .face:first-child{border-radius:22px 0 0 22px;}
+  }
+  /* 竖屏：问题在上、答案在下，各占满宽度 */
+  @media (min-width:700px) and (orientation:portrait){
+    .stage .flip-inner{flex-direction:column; align-items:stretch;}
+    .stage .flip-inner .face{min-height:240px; padding:26px 24px;}
+    .stage .flip-inner .face.back{border-top:1px dashed #ffdcea;}
+  }
+  /* 错因弹窗：两列网格，每项独立圆角，间距均匀 */
+  /* 统计页底部台账入口 */
+  .ledger-cta{display:flex; flex-direction:column; align-items:flex-start; gap:5px;
+    width:100%; box-sizing:border-box; padding:16px 18px; margin:0 0 4px;
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    color:inherit; font:inherit; text-align:left; cursor:pointer;
+    box-shadow:0 1px 3px rgba(0,0,0,.04); transition:background .15s, border-color .15s;}
+  .ledger-cta .lc-main{font-size:15px; font-weight:600; line-height:1.3; display:block;}
+  .ledger-cta .lc-sub{font-size:11.5px; color:var(--dim); line-height:1.5; display:block;}
+  .ledger-cta:active{background:var(--pink-soft); border-color:var(--pink);}
+
+  /* 快刷弹窗：两项上下排列，整块可点 */
+  .qd-grid{display:flex; flex-direction:column; gap:10px; margin-top:16px;}
+  .qd-item{display:flex; flex-direction:column; align-items:flex-start; justify-content:center;
+    gap:4px; width:100%; min-height:64px; padding:14px 18px; box-sizing:border-box;
+    border:1px solid var(--line); border-radius:16px; background:var(--card);
+    color:inherit; font:inherit; text-align:left; cursor:pointer;
+    transition:background .15s, border-color .15s;}
+  .qd-item b{font-size:15px; font-weight:700;}
+  .qd-item span{font-size:11.5px; color:var(--dim); line-height:1.5;}
+  .qd-item:active{background:#fff0f5; border-color:#ffc8dc;}
+
+  .rsn-grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:16px;}
+  .rsn-item{display:flex; align-items:center; justify-content:center;
+    min-height:54px; padding:12px 10px; box-sizing:border-box;
+    border:1px solid var(--line); border-radius:14px; background:var(--card);
+    color:inherit; font:inherit; font-size:14px; line-height:1.35; text-align:center;
+    cursor:pointer; transition:background .15s, border-color .15s;}
+  .rsn-item:active{background:#fff0f5; border-color:#ffc8dc;}
+  .rsn-clear{grid-column:1 / -1; min-height:48px; margin-top:2px;
+    background:transparent; border-style:dashed; color:var(--sub); font-size:13px;}
+  @media (max-width:340px){
+    .rsn-grid{gap:8px;}
+    .rsn-item{min-height:50px; font-size:13px; padding:10px 6px;}
+  }
+
   /* 卡片样式：所有尺寸通用，手机上也是卡片，不会再贴边 */
   .setblock{background:var(--card); border:1px solid var(--line); border-radius:20px;
     padding:6px 22px 12px; margin:0 0 16px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
@@ -8899,15 +9050,16 @@ function openCardMenu(c) {
 
   @media (min-width:700px){
     /* 瀑布流：两张卡片不等高也能自然错落，不会留大片空白 */
-    .setcols{column-count:2; column-gap:20px; column-fill:balance; max-width:1020px; margin:0 auto;}
-    .setcols > *:not(.setblock){column-span:all; -webkit-column-span:all;}
-    .setblock{break-inside:avoid; -webkit-column-break-inside:avoid;}
+    .setcols{display:grid; grid-template-columns:1fr 1fr; gap:0 20px; align-items:start;
+      max-width:1020px; margin:0 auto;}
+    .setcols > *:not(.setblock):not(.setcol){grid-column:1 / -1;}
+    .setcol{display:flex; flex-direction:column; min-width:0;}
     .list .setrow, .list .crow{min-width:0;}
     .setrow{padding-left:0; padding-right:0;}
     #app > .list > .setrow:only-child{grid-column:1 / -1;}
     .mode-grid{grid-template-columns:repeat(4,minmax(0,1fr));}
   }
-  @media (min-width:768px) and (orientation:landscape){
+  @media (min-width:700px) and (orientation:landscape){
     .stage .flip-inner .face{min-height:300px;}
   }
   html, body{max-width:100%; overflow-x:hidden;}
@@ -8965,8 +9117,8 @@ function viewBrowse() {
   if (!BROWSE.list.length) BROWSE.list = memCards(BROWSE.group);
   const c = BROWSE.list[BROWSE.i];
   const groups = ['全部'].concat(Object.keys(MEM_GROUPS));
-  const tabs = `<div style="display:flex; gap:7px; overflow-x:auto; padding:4px 0 12px;">
-    ${groups.map(g => `<button class="chip ${BROWSE.group === g ? 'on' : ''}" data-bgroup="${escAttr(g)}" style="flex-shrink:0; padding:7px 13px; font-size:12.5px;">${escHTML(g)}</button>`).join('')}
+  const tabs = `<div class="br-tabs">
+    ${groups.map(g => `<button class="chip br-tab ${BROWSE.group === g ? 'on' : ''}" data-bgroup="${escAttr(g)}">${escHTML(g)}</button>`).join('')}
   </div>`;
 
   if (!c) {
@@ -9104,6 +9256,19 @@ const BROWSE_UI = {
     font-size:13.5px; color:var(--sub); cursor:pointer; font-weight:500;}
   .cards-mode button.on{background:#fff; color:#e0455f; font-weight:600;
     box-shadow:0 2px 8px rgba(255,111,165,.16);}
+  /* 速览页分类标签：手机横向滚动，平板均分整行、长方形大按钮 */
+  .br-tabs{display:flex; gap:8px; overflow-x:auto; padding:4px 0 12px; scrollbar-width:none;}
+  .br-tabs::-webkit-scrollbar{display:none;}
+  .br-tab{flex-shrink:0; padding:9px 16px; font-size:13px; border-radius:12px;}
+  @media (min-width:700px){
+    .br-tabs{display:grid; grid-template-columns:repeat(auto-fit, minmax(112px, 1fr));
+      gap:10px; overflow:visible; padding:6px 0 18px;}
+    .br-tab{width:100%; min-height:54px; padding:14px 10px; font-size:14.5px;
+      display:flex; align-items:center; justify-content:center; box-sizing:border-box; border-radius:14px;}
+    .br-card.flat{min-height:58vh; display:flex; flex-direction:column; justify-content:center;}
+    .br-nav{margin-top:18px;}
+    .br-nav .chip{padding:14px 28px !important; font-size:14px; min-width:130px;}
+  }
   .br-nav{display:flex; align-items:center; justify-content:space-between; margin-top:14px; gap:10px;}
   .br-idx{font-size:12px; color:var(--dim);}
   `;
@@ -9402,12 +9567,23 @@ function quickDrillFlow() {
   const pool = due.length ? due : allCards();
   if (!pool.length) { toast('还没有可以刷的题'); return; }
   sheet('<h3>快刷</h3><div class="sdesc">直接从待复习里抽一组，立刻开始</div>' +
-    '<div class="list" style="gap:0;">' +
-    '<button class="setrow" id="qd10" style="width:100%; text-align:left;"><span class="g"><b>10 题</b><span>抽 10 张，不设时间</span></span><span style="color:var(--dim);">›</span></button>' +
-    '<button class="setrow" id="qd5m" style="width:100%; text-align:left;"><span class="g"><b>5 分钟</b><span>限时 5 分钟，到点自动结算</span></span><span style="color:var(--dim);">›</span></button>' +
+    '<div class="qd-grid">' +
+    '<button class="qd-item" data-qd="10"><b>10 题</b><span>抽 10 张，不设时间</span></button>' +
+    '<button class="qd-item" data-qd="5m"><b>5 分钟</b><span>限时 5 分钟，到点自动结算</span></button>' +
     '</div>', function (el, close) {
-    el.querySelector('#qd10').onclick = function () { close(); quickDrill('10'); };
-    el.querySelector('#qd5m').onclick = function () { close(); quickDrill('5m'); };
+    const list = el.querySelectorAll('[data-qd]');
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      b.onclick = function (ev) {
+        if (ev && ev.preventDefault) ev.preventDefault();
+        const m = b.getAttribute('data-qd');
+        try { close(); } catch (e) {}
+        setTimeout(function () {
+          try { quickDrill(m); }
+          catch (e) { toast('快刷失败：' + ((e && e.message) || e)); }
+        }, 80);
+      };
+    }
   });
 }
 
@@ -9416,12 +9592,9 @@ function quickDrill(mode) {
   const pool = due.length ? due : allCards();
   if (!pool.length) { toast('还没有可以刷的题'); return; }
   const list = shuffle(pool.slice()).slice(0, mode === '10' ? 10 : 40);
-  startCards('快刷', 'normal', list);
-  if (mode === '5m') {
-    ST.forceTimer = { mode: 'total', totalMin: 5, sound: true };
-    try { TM.start(true); } catch (e) {}
-    toast('5 分钟倒计时开始');
-  }
+  const ft = mode === '5m' ? { mode: 'total', totalMin: 5, sound: true } : null;
+  startCards('快刷', 'normal', list, ft);
+  if (ft) toast('5 分钟倒计时开始，到点自动结算');
 }
 
 /* ---------- 语音识别 ---------- */
@@ -10059,12 +10232,11 @@ function askReason(cardId, deck) {
 /* 错题本里改归因 */
 function pickReason(id, deck, after) {
   sheet('<h3>这道题的错因</h3><div class="sdesc">选一个最贴合的，帮你看清问题在哪</div>' +
-    '<div class="list" style="gap:0;">' +
+    '<div class="rsn-grid">' +
     REASONS.map(function (r) {
-      return '<button class="setrow" data-rp="' + r + '" style="width:100%; text-align:left;">' +
-        '<span class="g"><b>' + r + '</b></span><span style="color:var(--dim);">›</span></button>';
+      return '<button class="rsn-item" data-rp="' + r + '">' + r + '</button>';
     }).join('') +
-    '<button class="setrow" data-rp="" style="width:100%; text-align:left;"><span class="g"><b>清除归因</b></span></button>' +
+    '<button class="rsn-item rsn-clear" data-rp="">清除归因</button>' +
     '</div>', function (el, close) {
     el.querySelectorAll('[data-rp]').forEach(function (b) {
       b.onclick = function () {
@@ -10152,7 +10324,8 @@ function reasonPanelHTML() {
 
 (function injectReasonStyle() {
   const css = `
-  .reason-bar{position:fixed; left:50%; transform:translateX(-50%); bottom:14px; z-index:1400;
+  .reason-bar{position:fixed; left:50%; transform:translateX(-50%);
+    bottom:calc(76px + env(safe-area-inset-bottom)); z-index:1400;
     display:flex; align-items:center; gap:6px; padding:8px 10px; border-radius:99px;
     background:rgba(255,255,255,.98); border:1px solid #ffdcea; box-shadow:0 8px 26px rgba(255,111,165,.24);
     max-width:96vw; overflow-x:auto; animation:upin .18s ease;}
@@ -10375,6 +10548,7 @@ const MOD = {
   afterRender(view) {
     mountFab();
     try { maybeSyncFromCloud(); } catch (e) {}
+    try { layoutSettingsColumns(); } catch (e) {}
     try { applyLayout(); } catch (e) {}
     try {
       const sd = sprintData();
@@ -10472,10 +10646,11 @@ const MOD = {
       if (app && !document.getElementById('ledgerEntry')) {
         const d = document.createElement('div');
         d.id = 'ledgerEntry';
-        d.innerHTML = '<div class="sec-label" style="margin-top:22px;">陷阱台账</div>'
-          + '<button class="setrow" id="goLedger" style="width:100%; text-align:left;">'
-          + '<span class="g"><b>查看踩坑套路</b><span>按类型统计，拉去复习</span></span>'
-          + '<span style="color:var(--dim);">›</span></button>';
+        d.innerHTML = '<div class="sec-label" style="margin-top:24px; margin-bottom:8px;">陷阱台账</div>'
+          + '<button class="ledger-cta" id="goLedger">'
+          + '<span class="lc-main">查看踩坑套路</span>'
+          + '<span class="lc-sub">按类型统计，拉去复习</span>'
+          + '</button>';
         app.appendChild(d);
         d.querySelector('#goLedger').onclick = () => { S.view = 'ledger'; render(); };
       }
@@ -10563,7 +10738,7 @@ const MOD = {
     color:#d1668b; font-size:18px; line-height:1; cursor:pointer;}
   .mod-foot{padding:10px 18px 16px; font-size:11.5px; color:var(--dim); text-align:center; border-top:1px solid var(--line);}
   .bh-body{overflow-y:auto; padding:0 14px; flex:1;}
-  .bh-row{display:flex; align-items:center; gap:10px; padding:10px 8px; border-bottom:1px solid var(--line);}
+  .bh-row{display:flex; align-items:center; gap:12px; padding:11px 10px; min-height:46px; border-bottom:1px solid var(--line);}
   .bh-row.on{background:#fff5f9; border-radius:10px;}
   .bh-p{width:78px; font-size:15px; font-weight:600; color:#e0455f;}
   .bh-eq{color:var(--dim); font-size:13px;}
