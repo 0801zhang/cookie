@@ -4026,23 +4026,30 @@ function viewSettings() {
     <div class="sub" style="margin-top:5px;">偏好会一直保存在这台设备</div>
   </div>
 
-  <div class="sec-label">外观</div>
+  <div class="setblock">
+  <div class="sec-label">云端同步</div>
   <div class="list" style="gap:0;">
+    <button class="setrow" id="cloudCfgBtn" style="width:100%; text-align:left;">
+      <span class="g"><b>${cloudReady ? '已配置' : '未配置'}</b><span>${(cc.gt && cc.sync) ? 'Gitee · ' + cc.sync : ((cc.url && cc.key && cc.sync) ? 'Supabase · ' + cc.sync : ((cc.gUser && cc.gRepo && cc.gToken) ? 'GitHub · ' + cc.gUser + '/' + cc.gRepo : 'Gitee / Supabase / GitHub，任选其一'))}</span></span>
+      <span style="color:var(--dim);">›</span>
+    </button>
     <div class="setrow">
-      <span class="g"><b>主题</b><span>深色护眼会同步到所有页面</span></span>
+      <span class="g"><b>自动同步</b><span>改动后 20 秒自动传一次</span></span>
+      <button class="switch ${cc.auto ? 'on' : ''}" data-cloud-auto><i></i></button>
     </div>
-    <div class="setrow" style="padding-top:0;">
-      <div class="seg" style="width:100%;">
-        <button class="${st.theme !== 'dark' ? 'on' : ''}" data-theme-set="pink">浅色淡粉</button>
-        <button class="${st.theme === 'dark' ? 'on' : ''}" data-theme-set="dark">深色护眼</button>
-      </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:4px 0 2px;">
+      <button class="chip ${cloudReady ? 'on' : ''}" style="padding:12px 6px; font-size:13px; white-space:nowrap;" id="cloudPushBtn" ${cloudReady ? '' : 'disabled'}>立即上传</button>
+      <button class="chip ${cloudReady ? 'on' : ''}" style="padding:12px 6px; font-size:13px; white-space:nowrap;" id="cloudPullBtn" ${cloudReady ? '' : 'disabled'}>从云端恢复</button>
+      <button class="chip" style="grid-column:1 / -1; padding:11px 6px; font-size:13px;" id="cfgLinkBtn" ${cloudReady ? '' : 'disabled'}>复制配置链接</button>
     </div>
-    <div class="setrow">
-      <span class="g"><b>翻卡动画</b><span>关掉更快，适合追求速度</span></span>
-      <button class="switch ${st.anim ? 'on' : ''}" data-toggle="anim"><i></i></button>
+    <div class="setrow" style="font-size:11px; color:var(--dim); line-height:1.7;">
+      上次上传：${DB.settings.lastPush ? new Date(DB.settings.lastPush).toLocaleString('zh-CN') : '还没传过'}
     </div>
+    <button class="chip" id="diagBtn" style="width:100%; padding:10px; margin-top:6px; font-size:12.5px;">同步诊断（排查用）</button>
+  </div>
   </div>
 
+  <div class="setblock">
   <div class="sec-label">复习</div>
   <div class="list" style="gap:0;">
     <div class="setrow">
@@ -4075,7 +4082,28 @@ function viewSettings() {
       <button class="switch ${st.remind ? 'on' : ''}" data-toggle="remind"><i></i></button>
     </div>
   </div>
+  </div>
 
+  <div class="setblock">
+  <div class="sec-label">外观</div>
+  <div class="list" style="gap:0;">
+    <div class="setrow">
+      <span class="g"><b>主题</b><span>深色护眼会同步到所有页面</span></span>
+    </div>
+    <div class="setrow" style="padding-top:0;">
+      <div class="seg" style="width:100%;">
+        <button class="${st.theme !== 'dark' ? 'on' : ''}" data-theme-set="pink">浅色淡粉</button>
+        <button class="${st.theme === 'dark' ? 'on' : ''}" data-theme-set="dark">深色护眼</button>
+      </div>
+    </div>
+    <div class="setrow">
+      <span class="g"><b>翻卡动画</b><span>关掉更快，适合追求速度</span></span>
+      <button class="switch ${st.anim ? 'on' : ''}" data-toggle="anim"><i></i></button>
+    </div>
+  </div>
+  </div>
+
+  <div class="setblock">
   <div class="sec-label">各类题每日刷题量</div>
   <div class="list" style="gap:0;">
     ${[['calc', '资料分析速算'], ['formula', '公式选择'], ['pct', '百分比转换'], ['sq', '平方 · 乘方'], ['common', '常识判断'], ['judge', '判断推理'], ['idiom', '言语成语'], ['political', '政治理论']].map(([k, name]) => {
@@ -4088,28 +4116,9 @@ function viewSettings() {
       </div>`;
     }).join('')}
   </div>
-
-  <div class="sec-label">云端同步</div>
-  <div class="list" style="gap:0;">
-    <button class="setrow" id="cloudCfgBtn" style="width:100%; text-align:left;">
-      <span class="g"><b>${cloudReady ? '已配置' : '未配置'}</b><span>${(cc.gt && cc.sync) ? 'Gitee · ' + cc.sync : ((cc.url && cc.key && cc.sync) ? 'Supabase · ' + cc.sync : ((cc.gUser && cc.gRepo && cc.gToken) ? 'GitHub · ' + cc.gUser + '/' + cc.gRepo : 'Gitee / Supabase / GitHub，任选其一'))}</span></span>
-      <span style="color:var(--dim);">›</span>
-    </button>
-    <div class="setrow">
-      <span class="g"><b>自动同步</b><span>改动后 20 秒自动传一次</span></span>
-      <button class="switch ${cc.auto ? 'on' : ''}" data-cloud-auto><i></i></button>
-    </div>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:4px 0 2px;">
-      <button class="chip ${cloudReady ? 'on' : ''}" style="padding:12px 6px; font-size:13px; white-space:nowrap;" id="cloudPushBtn" ${cloudReady ? '' : 'disabled'}>立即上传</button>
-      <button class="chip ${cloudReady ? 'on' : ''}" style="padding:12px 6px; font-size:13px; white-space:nowrap;" id="cloudPullBtn" ${cloudReady ? '' : 'disabled'}>从云端恢复</button>
-      <button class="chip" style="grid-column:1 / -1; padding:11px 6px; font-size:13px;" id="cfgLinkBtn" ${cloudReady ? '' : 'disabled'}>复制配置链接</button>
-    </div>
-    <div class="setrow" style="font-size:11px; color:var(--dim); line-height:1.7;">
-      上次上传：${DB.settings.lastPush ? new Date(DB.settings.lastPush).toLocaleString('zh-CN') : '还没传过'}
-    </div>
-    <button class="chip" id="diagBtn" style="width:100%; padding:10px; margin-top:6px; font-size:12.5px;">同步诊断（排查用）</button>
   </div>
 
+  <div class="setblock">
   <div class="sec-label">数据</div>
   <div class="list" style="gap:0;">
     <button class="setrow" id="impBtn" style="width:100%; text-align:left;">
@@ -4126,7 +4135,9 @@ function viewSettings() {
       <span class="g"><b>本地快照</b><span>已存 ${(DB.snapshots || []).length} 份 · 自动 6 小时一次</span></span><span style="color:var(--dim);">›</span>
     </button>
   </div>
+  </div>
 
+  <div class="setblock">
   <div class="sec-label">重置</div>
   <div class="list" style="gap:0;">
     <button class="setrow" id="resetLogs" style="width:100%; text-align:left;">
@@ -4135,6 +4146,7 @@ function viewSettings() {
     <button class="setrow" id="resetAll" style="width:100%; text-align:left;">
       <span class="g"><b style="color:var(--red)">清空全部数据</b><span>卡片、进度、记录一起删</span></span><span style="color:var(--dim);">›</span>
     </button>
+  </div>
   </div>
 
   <div style="margin-top:20px; text-align:center; font-size:11.5px; color:var(--dim); line-height:1.9;">
@@ -5574,7 +5586,15 @@ async function gePush(silent) {
   /* 瘦身：快照不传、日志截断，避免请求体超出限制 */
   const slim = Object.assign({}, DB);
   slim.snapshots = [];
-  if (Array.isArray(slim.logs) && slim.logs.length > 800) slim.logs = slim.logs.slice(-800);
+  /* 学习日志全量传（本地最多保留 2000 条，压缩后占比很小） */
+  /* 刷题进度与统计存在独立的 store 里，必须一起传，否则换设备后进度对不上 */
+  slim.store = store;
+  /* 保护：本机数据明显偏少时不上传，避免把云端覆盖成空库 */
+  const cardN = (slim.cards || []).length;
+  if (cardN < 100) {
+    if (!silent) toast('本机只有 ' + cardN + ' 张卡片，为免覆盖云端已取消上传');
+    return false;
+  }
   const packed = await packCloud(slim);
   const files = { 'binggan.json': { content: JSON.stringify(packed) } };
   try {
@@ -5721,6 +5741,10 @@ async function cloudRestore() {
     });
     DB.settings = Object.assign(defDB().settings, nd.settings);
     DB.mods = Object.assign(modsDefault(), nd.mods || {});
+    if (d.payload && d.payload.store && d.payload.store.cards) {
+      store = d.payload.store;
+      try { save(); } catch (e) {}
+    }
     __cardsDirty = true;
     CB = DB;
     bootCards();
@@ -5766,6 +5790,10 @@ function showSyncHint(cloudAt) {
       });
       DB.settings = Object.assign(defDB().settings, nd.settings);
       DB.mods = Object.assign(modsDefault(), nd.mods || {});
+      if (d.payload && d.payload.store && d.payload.store.cards) {
+        store = d.payload.store;
+        try { save(); } catch (e) {}
+      }
       DB.settings.lastPush = Date.now();
       __cardsDirty = true;
       CB = DB;
@@ -7407,10 +7435,11 @@ const EXTRA = {
 
     // 设置页：新增入口
     if (view === 'settings') {
-      const first = document.querySelector('.sec-label');
+      const first = [...document.querySelectorAll('.sec-label')].find(x => x.textContent.trim() === '外观') || document.querySelector('.sec-label');
       if (first && !document.getElementById('examEntry')) {
         const wrap = document.createElement('div');
         wrap.id = 'examEntry';
+        wrap.className = 'setblock';
         wrap.innerHTML = `
           <div class="sec-label">考试与数据</div>
           <div class="list" style="gap:0;">
@@ -7530,8 +7559,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.4.5';
-const BUILD_STAMP = '2026-11-09 10:25';
+const APP_VERSION = '1.5.0';
+const BUILD_STAMP = '2026-11-09 12:05';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8205,11 +8234,16 @@ function openCardMenu(c) {
     .stage .flip .face.back{border-left:1px dashed #ffdcea;}
     .list{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; align-items:start;}
     /* 设置页：按块分栏，避免分组被拆到两列造成错位 */
-    .setcols{column-count:2; column-gap:22px;}
-    .setcols > *{break-inside:avoid; -webkit-column-break-inside:avoid;}
+    .setcols{max-width:720px; margin:0 auto;}
     .setcols .list{display:block;}
-    .setcols .sec-label{break-after:avoid; -webkit-column-break-after:avoid; margin-top:0;}
     .setcols .setrow{display:flex; width:100%;}
+  }
+  @media (min-width:900px){
+    .setcols{max-width:1000px; column-count:2; column-gap:26px;}
+    .setblock{break-inside:avoid; -webkit-column-break-inside:avoid; display:block;}
+    .setblock .sec-label{margin-top:0;}
+    .setcols > div:first-child{break-after:avoid; -webkit-column-break-after:avoid;}
+    .setcols > div:last-child{break-before:avoid; -webkit-column-break-before:avoid;}
     .list .setrow, .list .crow{min-width:0;}
     .setrow{padding-left:0; padding-right:0;}
     #app > .list > .setrow:only-child{grid-column:1 / -1;}
@@ -9780,10 +9814,11 @@ const MOD = {
 
     // 设置页：学习增强入口
     if (view === 'settings') {
-      const first = document.querySelector('.sec-label');
+      const first = [...document.querySelectorAll('.sec-label')].find(x => x.textContent.trim() === '外观') || document.querySelector('.sec-label');
       if (first && !document.getElementById('modSection')) {
         const wrap = document.createElement('div');
         wrap.id = 'modSection';
+        wrap.className = 'setblock';
         wrap.innerHTML = `
           <div class="sec-label">学习增强</div>
           <div class="list" style="gap:0;">
@@ -10576,7 +10611,7 @@ async function runExport(withImages, el, close) {
     data: {
       cards: DB.cards, decks: DB.decks, sched: DB.sched, logs: DB.logs,
       sessions: DB.sessions, settings: DB.settings, stats: DB.stats, mods: DB.mods,
-      idiomRel: DB.idiomRel, snapshots: null
+      idiomRel: DB.idiomRel, store: store, snapshots: null
     }
   };
   if (withImages) pack.images = images;
@@ -10620,6 +10655,7 @@ function normalizeBackup(raw) {
     mods: d.mods || null,
     snapshots: Array.isArray(d.snapshots) ? d.snapshots : null,
     idiomRel: (d.idiomRel && typeof d.idiomRel === 'object') ? d.idiomRel : null,
+    store: (d.store && d.store.cards) ? d.store : null,
     images: (raw.images && typeof raw.images === 'object') ? raw.images : null,
     at: raw.at || null,
     ver: raw.v || 0
@@ -10690,6 +10726,7 @@ function importBackup(text) {
         DB.settings = Object.assign(defDB().settings, d.settings);
         DB.mods = Object.assign(modsDefault(), d.mods || {});
         if (d.idiomRel && Object.keys(d.idiomRel).length) { DB.idiomRel = d.idiomRel; DB.idiomRelV = IDIOM_REL_VER; }
+        if (d.store && d.store.cards) { store = d.store; try { save(); } catch (e) {} }
         if (d.snapshots) {
           DB.snapshots = d.snapshots;
           __legacySnaps = [];
