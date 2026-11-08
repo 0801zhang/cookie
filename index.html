@@ -4020,6 +4020,7 @@ function viewSettings() {
   const cc = cloudCfg();
   const cloudReady = !!(cc.gt && cc.sync) || !!(cc.url && cc.key && cc.sync) || !!(cc.gUser && cc.gRepo && cc.gToken);
   return `
+  <div class="setcols">
   <div style="margin:6px 0 16px;">
     <div style="font-size:25px; font-weight:700; letter-spacing:-.6px;">设置</div>
     <div class="sub" style="margin-top:5px;">偏好会一直保存在这台设备</div>
@@ -4106,6 +4107,7 @@ function viewSettings() {
     <div class="setrow" style="font-size:11px; color:var(--dim); line-height:1.7;">
       上次上传：${DB.settings.lastPush ? new Date(DB.settings.lastPush).toLocaleString('zh-CN') : '还没传过'}
     </div>
+    <button class="chip" id="diagBtn" style="width:100%; padding:10px; margin-top:6px; font-size:12.5px;">同步诊断（排查用）</button>
   </div>
 
   <div class="sec-label">数据</div>
@@ -4136,7 +4138,9 @@ function viewSettings() {
   </div>
 
   <div style="margin-top:20px; text-align:center; font-size:11.5px; color:var(--dim); line-height:1.9;">
-    饼干 🍪 · FSRS-4.5 · 数据只存在本机<br>建议每周导出一次备份
+    饼干 🍪 · <b id="verTxt">v${typeof APP_VERSION !== 'undefined' ? APP_VERSION : '?'}</b> · FSRS-4.5<br>
+    <span style="opacity:.75">构建 ${typeof BUILD_STAMP !== 'undefined' ? BUILD_STAMP : '?'} · 数据只存在本机</span><br>建议每周导出一次备份
+  </div>
   </div>`;
 }
 
@@ -5139,6 +5143,7 @@ function bind() {
   });
   if ($('#cloudPushBtn')) $('#cloudPushBtn').onclick = () => cloudPush(false);
   if ($('#cloudPullBtn')) $('#cloudPullBtn').onclick = cloudRestore;
+  if ($('#diagBtn')) $('#diagBtn').onclick = () => runDiag();
   if ($('#cfgLinkBtn')) $('#cfgLinkBtn').onclick = () => {
     const link = cfgEncode();
     if (!link) { toast('先填好配置'); return; }
@@ -5518,19 +5523,60 @@ function geConf() {
 
 const GE = 'https://gitee.com/api/v5';
 
+function fetchT(url, opt, ms) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms || 20000);
+  return fetch(url, Object.assign({}, opt || {}, { signal: ctl.signal })).finally(() => clearTimeout(t));
+}
+
+/* 云端打包：支持 gzip 压缩，1.2MB 的题库能压到 200KB 左右 */
+async function packCloud(obj) {
+  const text = JSON.stringify(obj);
+  try {
+    if (typeof CompressionStream === 'function') {
+      const cs = new CompressionStream('gzip');
+      const buf = await new Response(new Blob([text]).stream().pipeThrough(cs)).arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 8192) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+      }
+      return { z: 1, d: btoa(bin), raw: text.length };
+    }
+  } catch (e) {}
+  return { z: 0, d: text, raw: text.length };
+}
+
+async function unpackCloud(obj) {
+  if (!obj || typeof obj !== 'object') throw new Error('云端数据为空');
+  if (!obj.z) return obj.d ? JSON.parse(obj.d) : obj;
+  const bin = atob(obj.d);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  if (typeof DecompressionStream !== 'function') throw new Error('当前浏览器不支持解压');
+  const ds = new DecompressionStream('gzip');
+  const buf = await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer();
+  return JSON.parse(new TextDecoder().decode(buf));
+}
+
 async function geFind(token, sync) {
-  const r = await fetch(GE + '/gists?access_token=' + encodeURIComponent(token) + '&per_page=100');
-  if (r.status === 401) throw new Error('token 无效');
+  const r = await fetchT(GE + '/gists?access_token=' + encodeURIComponent(token) + '&per_page=100', {}, 20000);
+  if (r.status === 401) throw new Error('token 无效或已过期');
   if (!r.ok) throw new Error('HTTP ' + r.status);
   const list = await r.json();
-  if (!Array.isArray(list)) throw new Error('token 或权限不对');
+  if (!Array.isArray(list)) throw new Error('token 权限不对，需要勾选 gists');
   return list.find(x => x.description === sync) || null;
 }
 
 async function gePush(silent) {
   const g = geConf();
   if (!g) return false;
-  const files = { 'binggan.json': { content: JSON.stringify(DB) } };
+  /* 瘦身：快照不传、日志截断，避免请求体超出限制 */
+  const slim = Object.assign({}, DB);
+  slim.snapshots = [];
+  if (Array.isArray(slim.logs) && slim.logs.length > 800) slim.logs = slim.logs.slice(-800);
+  const packed = await packCloud(slim);
+  const files = { 'binggan.json': { content: JSON.stringify(packed) } };
   try {
     const hit = await geFind(g.token, g.sync);
     let url, method, body;
@@ -5543,19 +5589,25 @@ async function gePush(silent) {
       method = 'POST';
       body = { description: g.sync, public: false, files };
     }
-    const r = await fetch(url, {
+    const r = await fetchT(url, {
       method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-    });
+    }, 30000);
     if (!r.ok) {
       const t = await r.text().catch(() => '');
-      throw new Error('HTTP ' + r.status + (t ? ' · ' + t.slice(0, 60) : ''));
+      throw new Error('HTTP ' + r.status + (t ? ' · ' + t.slice(0, 80) : ''));
     }
     DB.settings.lastPush = Date.now();
-    try { localStorage.setItem(CARD_KEY, JSON.stringify(DB)); } catch (e) {}
-    if (!silent) toast('已上传到 Gitee');
+    saveDB();
+    if (!silent) {
+      const kb = Math.round(files['binggan.json'].content.length / 1024);
+      toast('已上传到 Gitee（' + kb + ' KB）');
+    }
     return true;
   } catch (e) {
-    if (!silent) toast('上传失败：' + e.message);
+    const msg = (e && e.name === 'AbortError') ? '请求超时，可能是数据过大或网络不通' : (e && e.message) || '未知错误';
+    if (!silent) toast('上传失败：' + msg);
+    SYNC.state = 'fail'; SYNC.msg = msg; SYNC.at = Date.now();
+    try { paintSync(); } catch (er) {}
     return false;
   }
 }
@@ -5570,10 +5622,13 @@ async function gePull(force) {
     if (!f) { if (force) toast('云端文件缺失'); return null; }
     let content = f.content;
     if (!content && f.raw_url) {
-      const rr = await fetch(f.raw_url);
+      const rr = await fetchT(f.raw_url, {}, 25000);
       content = await rr.text();
     }
-    return { payload: JSON.parse(content), at: hit.updated_at };
+    if (!content) throw new Error('云端文件内容为空');
+    let obj;
+    try { obj = JSON.parse(content); } catch (e) { throw new Error('云端文件已损坏'); }
+    return { payload: await unpackCloud(obj), at: hit.updated_at };
   } catch (e) {
     toast('拉取失败：' + e.message);
     return null;
@@ -5597,18 +5652,55 @@ async function cloudPull(force) {
 
 async function runDiag() {
   const lines = [];
-  const b = sbConf();
-  lines.push('配置：' + (b ? 'Supabase' : (geConf() ? 'Gitee' : (ghConf() ? 'GitHub' : '无'))));
-  if (b) {
+  const g = geConf(), b = sbConf(), gh = ghConf();
+  lines.push('App 版本：' + (typeof APP_VERSION !== 'undefined' ? APP_VERSION : '?') + '  (' + (typeof BUILD_STAMP !== 'undefined' ? BUILD_STAMP : '?') + ')');
+  lines.push('同步方式：' + (g ? 'Gitee' : b ? 'Supabase' : gh ? 'GitHub' : '未配置'));
+  lines.push('本机上次上传：' + (DB.settings.lastPush ? new Date(DB.settings.lastPush).toLocaleString('zh-CN') : '还没传过'));
+  lines.push('本机卡片数：' + ((DB.cards || []).length));
+  lines.push('');
+
+  if (g) {
+    lines.push('同步码：' + g.sync);
+    lines.push('token 前 6 位：' + g.token.slice(0, 6) + '…（共 ' + g.token.length + ' 位）');
+    try {
+      const t0 = Date.now();
+      const r = await fetchT(GE + '/gists?access_token=' + encodeURIComponent(g.token) + '&per_page=100', {}, 15000);
+      lines.push('列表请求：HTTP ' + r.status + ' · 耗时 ' + (Date.now() - t0) + 'ms');
+      if (!r.ok) {
+        lines.push('返回：' + (await r.text()).slice(0, 200));
+      } else {
+        const list = await r.json();
+        lines.push('账号下 gist 数：' + (Array.isArray(list) ? list.length : '不是数组'));
+        if (Array.isArray(list)) {
+          const hit = list.find(x => x.description === g.sync);
+          if (hit) {
+            lines.push('✅ 匹配到 gist：' + hit.id);
+            lines.push('云端更新时间：' + hit.updated_at);
+            const f = hit.files && hit.files['binggan.json'];
+            if (f) {
+              lines.push('文件大小：' + (f.size || (f.content || '').length) + ' 字节');
+              if (f.content) lines.push('内容开头：' + f.content.slice(0, 36));
+            } else {
+              lines.push('❌ 文件 binggan.json 不存在');
+            }
+          } else {
+            lines.push('❌ 没找到同步码为「' + g.sync + '」的 gist');
+            lines.push('现有描述：' + list.slice(0, 6).map(x => x.description || '(无描述)').join(' ｜ '));
+          }
+        }
+      }
+    } catch (e) {
+      lines.push('请求失败：' + (e && e.name) + ' · ' + (e && e.message));
+    }
+  } else if (b) {
     lines.push('URL：' + b.url);
     lines.push('同步码：' + b.sync);
-    lines.push('key前缀：' + b.key.slice(0, 16) + '…');
+    lines.push('key 前缀：' + b.key.slice(0, 16) + '…');
     try {
       const t0 = Date.now();
       const r = await sbFetch(b.url + '/rest/v1/binggan_data?select=id,updated_at&limit=10', { headers: sbHeaders(b.key) }, 12000);
       lines.push('列表请求：HTTP ' + r.status + ' · ' + (Date.now() - t0) + 'ms');
-      const txt = await r.text();
-      lines.push('返回：' + txt.slice(0, 300));
+      lines.push('返回：' + (await r.text()).slice(0, 300));
     } catch (e) {
       lines.push('列表请求失败：' + e.name + ' · ' + e.message);
     }
@@ -5634,6 +5726,55 @@ async function cloudRestore() {
     bootCards();
     saveDB(); applyTheme(); toast('已恢复'); go('home');
   });
+}
+
+/* 启动时检查云端是否有别的设备传过新数据 */
+async function pullOnBoot() {
+  try {
+    if (!cloudCfg().auto) return;
+    if (!geConf() && !sbConf() && !ghConf()) return;
+    const d = await cloudPull(false);
+    if (!d || !d.at) return;
+    const cloudAt = new Date(String(d.at).replace(/-/g, '/')).getTime();
+    const local = DB.settings.lastPush || 0;
+    if (!cloudAt || cloudAt <= local + 60000) return;
+    __cloudNewer = d;
+    showSyncHint(cloudAt);
+  } catch (e) {}
+}
+
+let __cloudNewer = null;
+
+function showSyncHint(cloudAt) {
+  let el = document.getElementById('syncHint');
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+  el = document.createElement('div');
+  el.id = 'syncHint';
+  el.className = 'sync-pill ok';
+  el.style.display = 'flex';
+  el.style.cursor = 'pointer';
+  el.innerHTML = '<i></i><span>云端有更新 · 点此同步</span>';
+  el.onclick = function () {
+    if (el.parentNode) el.parentNode.removeChild(el);
+    const d = __cloudNewer;
+    if (!d) { cloudRestore(); return; }
+    confirmSheet('同步云端数据', '云端数据会覆盖这台设备上的内容，确定？', '覆盖并同步', function () {
+      const nd = normalizeBackup(d.payload) || { cards: d.payload.cards, sched: d.payload.sched || {}, settings: d.payload.settings || {} };
+      DB = Object.assign(defDB(), {
+        cards: nd.cards, decks: nd.decks || defDB().decks,
+        sched: nd.sched, logs: nd.logs, sessions: nd.sessions, stats: nd.stats
+      });
+      DB.settings = Object.assign(defDB().settings, nd.settings);
+      DB.mods = Object.assign(modsDefault(), nd.mods || {});
+      DB.settings.lastPush = Date.now();
+      __cardsDirty = true;
+      CB = DB;
+      bootCards();
+      saveDB(); applyTheme(); toast('已同步'); go('home');
+    });
+  };
+  document.body.appendChild(el);
+  setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 30000);
 }
 
 let _autoSyncT;
@@ -7389,8 +7530,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.4.1';
-const BUILD_STAMP = '2026-11-09 00:10';
+const APP_VERSION = '1.4.5';
+const BUILD_STAMP = '2026-11-09 10:25';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8063,6 +8204,12 @@ function openCardMenu(c) {
       backface-visibility:visible!important; opacity:1!important; flex:1; min-height:250px; width:auto;}
     .stage .flip .face.back{border-left:1px dashed #ffdcea;}
     .list{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; align-items:start;}
+    /* 设置页：按块分栏，避免分组被拆到两列造成错位 */
+    .setcols{column-count:2; column-gap:22px;}
+    .setcols > *{break-inside:avoid; -webkit-column-break-inside:avoid;}
+    .setcols .list{display:block;}
+    .setcols .sec-label{break-after:avoid; -webkit-column-break-after:avoid; margin-top:0;}
+    .setcols .setrow{display:flex; width:100%;}
     .list .setrow, .list .crow{min-width:0;}
     .setrow{padding-left:0; padding-right:0;}
     #app > .list > .setrow:only-child{grid-column:1 / -1;}
@@ -10795,6 +10942,7 @@ initSnapMigrate();
 applyTheme();
 render();
 setTimeout(checkRemind, 3000);
+setTimeout(pullOnBoot, 2500);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { autoSnapshot(); checkRemind(); }
 });
