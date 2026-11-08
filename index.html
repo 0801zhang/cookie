@@ -4283,8 +4283,8 @@ function layoutSettingsColumns() {
     const other = Array.prototype.slice.call(wrap.children).filter(function (el) {
       return !(el.classList && el.classList.contains('setblock'));
     });
-    /* 非卡片的元素留在顶部，不要删 */
-    other.forEach(function (el) { try { wrap.insertBefore(el, wrap.firstChild); } catch (e) {} });
+    /* 非卡片元素保持原位（CSS 让它们整行跨两列），不要搬动 */
+
 
     const first = place(measure(blocks));
     first.A.forEach(function (b) { colA.appendChild(b); });
@@ -4449,11 +4449,11 @@ function viewSettings() {
     </button>
   </div>
   </div>
+  </div>
 
-  <div style="margin-top:20px; text-align:center; font-size:11.5px; color:var(--dim); line-height:1.9;">
+  <div style="margin:26px 0 8px; text-align:center; font-size:11.5px; color:var(--dim); line-height:1.9;">
     饼干 🍪 · <b id="verTxt">v${typeof APP_VERSION !== 'undefined' ? APP_VERSION : '?'}</b> · FSRS-4.5<br>
     <span style="opacity:.75">构建 ${typeof BUILD_STAMP !== 'undefined' ? BUILD_STAMP : '?'} · 数据只存在本机</span><br>建议每周导出一次备份
-  </div>
   </div>`;
 }
 
@@ -8327,8 +8327,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.13.1';
-const BUILD_STAMP = '11-09 05:20';
+const APP_VERSION = '1.13.2';
+const BUILD_STAMP = '11-09 05:40';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
