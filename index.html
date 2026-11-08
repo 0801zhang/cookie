@@ -3445,6 +3445,32 @@ function loadStore() {
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (e) {}
 }
+
+/* 合并两份额刷题记录：按题目取练习次数多的那份，统计取并集，任何一边都不会被清空 */
+function mergeStore(a, b) {
+  const A = a || { cards: {}, stats: {} }, B = b || { cards: {}, stats: {} };
+  const ac = A.cards || {}, bc = B.cards || {};
+  const cards = {};
+  Object.keys(bc).forEach(function (k) { cards[k] = bc[k]; });
+  Object.keys(ac).forEach(function (k) {
+    const x = ac[k], y = bc[k];
+    if (!y) { cards[k] = x; return; }
+    cards[k] = ((x.r || 0) + (x.w || 0)) >= ((y.r || 0) + (y.w || 0)) ? x : y;
+  });
+  const as = A.stats || {}, bs = B.stats || {};
+  const ad = as.days || {}, bd = bs.days || {};
+  const days = {};
+  Object.keys(bd).forEach(function (k) { days[k] = bd[k] || 0; });
+  Object.keys(ad).forEach(function (k) { days[k] = Math.max(days[k] || 0, ad[k] || 0); });
+  return { cards: cards, stats: {
+    total: Math.max(as.total || 0, bs.total || 0),
+    right: Math.max(as.right || 0, bs.right || 0),
+    days: days,
+    streakDays: Math.max(as.streakDays || 0, bs.streakDays || 0),
+    lastDay: (as.lastDay || '') > (bs.lastDay || '') ? as.lastDay : bs.lastDay,
+    best: Math.max(as.best || 0, bs.best || 0)
+  } };
+}
 function getCard(id) {
   if (!store.cards[id]) store.cards[id] = { box: 0, next: 0, r: 0, w: 0, last: 0 };
   return store.cards[id];
@@ -4090,12 +4116,13 @@ function viewSettings() {
       <span style="color:var(--dim);">›</span>
     </button>
     <div class="setrow">
-      <span class="g"><b>自动同步</b><span>改动后 20 秒自动传一次</span></span>
+      <span class="g"><b>自动同步</b><span>改动后 90 秒自动传一次</span></span>
       <button class="switch ${cc.auto ? 'on' : ''}" data-cloud-auto><i></i></button>
     </div>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:4px 0 2px;">
       <button class="chip ${cloudReady ? 'on' : ''}" style="padding:12px 6px; font-size:13px; white-space:nowrap;" id="cloudPushBtn" ${cloudReady ? '' : 'disabled'}>立即上传</button>
       <button class="chip ${cloudReady ? 'on' : ''}" style="padding:12px 6px; font-size:13px; white-space:nowrap;" id="cloudPullBtn" ${cloudReady ? '' : 'disabled'}>从云端恢复</button>
+      <button class="chip on" style="grid-column:1 / -1; padding:12px 6px; font-size:13px; font-weight:600;" id="cloudMergeBtn" ${cloudReady ? '' : 'disabled'}>合并云端（两台都点一次）</button>
       <button class="chip" style="grid-column:1 / -1; padding:11px 6px; font-size:13px;" id="cfgLinkBtn" ${cloudReady ? '' : 'disabled'}>复制配置链接</button>
     </div>
     <div class="setrow" style="font-size:11px; color:var(--dim); line-height:1.7;">
@@ -4658,6 +4685,25 @@ function sheet(html, onMount) {
   return mask;
 }
 
+/* 通用确认弹窗：标题 / 说明 / 确认按钮 / 回调 */
+function confirmSheet(title, msg, btnText, onOk, onCancel) {
+  sheet(
+    '<h3>' + title + '</h3>' +
+    '<div class="sdesc">' + msg + '</div>' +
+    '<button class="btn-main" id="cfOk">' + (btnText || '确定') + '</button>' +
+    '<button class="btn-main" id="cfNo" style="margin-top:8px; background:transparent; color:var(--sub); box-shadow:none;">取消</button>',
+    function (el, close) {
+      var ok = el.querySelector('#cfOk');
+      var no = el.querySelector('#cfNo');
+      if (ok) ok.onclick = function () {
+        close();
+        try { if (onOk) onOk(); } catch (e) { toast('操作失败：' + ((e && e.message) || e)); }
+      };
+      if (no) no.onclick = function () { close(); if (onCancel) try { onCancel(); } catch (e) {} };
+    }
+  );
+}
+
 function openImport() {
   sheet(`
     <h3>批量导入卡片</h3>
@@ -5213,6 +5259,7 @@ function bind() {
   });
   if ($('#cloudPushBtn')) $('#cloudPushBtn').onclick = () => cloudPush(false);
   if ($('#cloudPullBtn')) $('#cloudPullBtn').onclick = cloudRestore;
+  if ($('#cloudMergeBtn')) $('#cloudMergeBtn').onclick = () => cloudMerge();
   if ($('#diagBtn')) $('#diagBtn').onclick = () => runDiag();
   if ($('#usageRow')) $('#usageRow').onclick = () => storageBreakdown();
   if ($('#cfgLinkBtn')) $('#cfgLinkBtn').onclick = () => {
@@ -5684,6 +5731,17 @@ async function gePush(silent) {
     if (!silent) toast('本机只有 ' + cardN + ' 张卡片，为免覆盖云端已取消上传');
     return false;
   }
+  /* 缩水保护：本机刷题记录比上次上传少很多，判定为空设备，禁止覆盖云端 */
+  const localRecs = Object.keys((store && store.cards) || {}).length;
+  const knownRecs = DB.settings.lastPushRecs || 0;
+  if (localRecs === 0 && knownRecs > 0) {
+    if (!silent) toast('本机没有刷题记录，为免覆盖云端已取消上传');
+    return false;
+  }
+  if (knownRecs - localRecs > 20 && localRecs < knownRecs * 0.5) {
+    if (!silent) toast('本机记录（' + localRecs + ' 条）比上次上传（' + knownRecs + ' 条）少很多，为免覆盖云端已取消上传');
+    return false;
+  }
   const packed = await packCloud(slim);
   const files = { 'binggan.json': { content: JSON.stringify(packed) } };
   try {
@@ -5718,6 +5776,7 @@ async function gePush(silent) {
       throw new Error('HTTP ' + r.status + (t ? ' · ' + t.slice(0, 80) : ''));
     }
     DB.settings.lastPush = Date.now();
+    DB.settings.lastPushRecs = Object.keys((store && store.cards) || {}).length;
     saveDB();
     if (!silent) {
       const kb = Math.round(files['binggan.json'].content.length / 1024);
@@ -5783,6 +5842,7 @@ async function runDiag() {
     lines.push('本机统计：今日 ' + ((ss.days && ss.days[dateKey()]) || 0) + ' · 累计 ' + (ss.total || 0)
       + ' · 答对 ' + (ss.right || 0) + ' · 连续 ' + (ss.streakDays || 0));
     lines.push('本机答题记录：' + Object.keys(store.cards || {}).length + ' 条');
+    lines.push('上次上传时记录数：' + (DB.settings.lastPushRecs || 0) + ' 条');
   } catch (e) {}
   lines.push('');
 
@@ -5851,6 +5911,25 @@ async function runDiag() {
   }
   const html = lines.map(x => x.replace(/</g, '&lt;')).join('\n');
   sheet('<h3>同步诊断</h3><div class="sdesc">把这段截图发给我</div><pre style="white-space:pre-wrap; word-break:break-all; font-size:11px; background:#fff0f5; padding:12px; border-radius:12px; line-height:1.7;">' + html + '</pre>', () => {});
+}
+
+async function cloudMerge() {
+  toast('正在合并云端…');
+  const d = await cloudPull(true);
+  if (!d) return;
+  try {
+    const localRec = Object.keys((store && store.cards) || {}).length;
+    const cloudRec = Object.keys(((d.payload && d.payload.store && d.payload.store.cards) || {})).length;
+    const merged = mergeStore(store, (d.payload && d.payload.store) || {});
+    store = merged;
+    try { save(); } catch (e) {}
+    __cardsDirty = true;
+    CB = DB;
+    saveDB();
+    setTimeout(function () { try { render(); } catch (e) {} }, 80);
+    toast('已合并：本机 ' + localRec + ' + 云端 ' + cloudRec + ' → 合计 ' + Object.keys(merged.cards).length + ' 条');
+    setTimeout(function () { cloudPush(false); }, 1500);
+  } catch (e) { toast('合并失败：' + (e && e.message)); }
 }
 
 async function cloudRestore() {
@@ -5937,9 +6016,10 @@ function applyCloud(d, silent) {
     DB.settings = Object.assign(defDB().settings, nd.settings);
     DB.mods = Object.assign(modsDefault(), nd.mods || {});
     if (d.payload.store && d.payload.store.cards) {
-      store = d.payload.store;
+      store = mergeStore(store, d.payload.store);
       try { save(); } catch (e) {}
     }
+    DB.settings.lastPushRecs = Object.keys((store && store.cards) || {}).length;
     DB.settings.lastPush = Date.now();
     __cardsDirty = true;
     CB = DB;
@@ -5953,7 +6033,7 @@ function applyCloud(d, silent) {
 function showSyncHint(cloudAt) {
   try {
     const t = new Date(cloudAt).toLocaleString('zh-CN');
-    confirmSheet('云端有更新的数据', '云端数据更新于 ' + t + '，比这台设备新。是否用云端数据覆盖本机？', '覆盖并同步', function () {
+    confirmSheet('云端有更新的数据', '云端数据更新于 ' + t + '，比这台设备新。合并后两边记录都会保留，不会互相覆盖。', '合并并同步', function () {
       const d = __cloudNewer;
       if (!d) { cloudRestore(); return; }
       const nd = normalizeBackup(d.payload) || { cards: d.payload.cards, sched: d.payload.sched || {}, settings: d.payload.settings || {} };
@@ -5964,9 +6044,10 @@ function showSyncHint(cloudAt) {
       DB.settings = Object.assign(defDB().settings, nd.settings);
       DB.mods = Object.assign(modsDefault(), nd.mods || {});
       if (d.payload && d.payload.store && d.payload.store.cards) {
-        store = d.payload.store;
+        store = mergeStore(store, d.payload.store);
         try { save(); } catch (e) {}
       }
+      DB.settings.lastPushRecs = Object.keys((store && store.cards) || {}).length;
       DB.settings.lastPush = Date.now();
       __cardsDirty = true;
       CB = DB;
@@ -5999,9 +6080,10 @@ function showSyncHintOld(cloudAt) {
       DB.settings = Object.assign(defDB().settings, nd.settings);
       DB.mods = Object.assign(modsDefault(), nd.mods || {});
       if (d.payload && d.payload.store && d.payload.store.cards) {
-        store = d.payload.store;
+        store = mergeStore(store, d.payload.store);
         try { save(); } catch (e) {}
       }
+      DB.settings.lastPushRecs = Object.keys((store && store.cards) || {}).length;
       DB.settings.lastPush = Date.now();
       __cardsDirty = true;
       CB = DB;
@@ -6018,7 +6100,7 @@ function scheduleSync() {
   const c = cloudCfg();
   if (!c.auto || (!ghConf() && !sbConf() && !geConf())) return;
   clearTimeout(_autoSyncT);
-  _autoSyncT = setTimeout(() => { cloudPush(true); }, 20000);
+  _autoSyncT = setTimeout(() => { cloudPush(true); }, 90000);
 }
 
 function cloudConfigFlow() {
@@ -7820,8 +7902,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.8.2';
-const BUILD_STAMP = '11-08 22:05';
+const APP_VERSION = '1.8.5';
+const BUILD_STAMP = '11-08 22:55';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8501,13 +8583,24 @@ function openCardMenu(c) {
   }
   /* 卡片样式：所有尺寸通用，手机上也是卡片，不会再贴边 */
   .setblock{background:var(--card); border:1px solid var(--line); border-radius:20px;
-    padding:8px 20px 16px; margin:0 0 16px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
-  .setblock .sec-label{margin:14px 0 4px; padding-left:0; font-weight:600; letter-spacing:.2px;}
+    padding:6px 22px 12px; margin:0 0 16px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
+  .setblock .sec-label{margin:18px 0 8px; padding-left:0; font-weight:600; letter-spacing:.2px;}
   .setblock .list{background:transparent; border:none; border-radius:0;}
-  .setblock .setrow{padding-left:0; padding-right:0; padding-top:14px; padding-bottom:14px;}
-  .setblock .setrow:first-child{padding-top:6px;}
-  .setblock .setrow:last-child{padding-bottom:2px;}
+  /* 内层行去掉自己的边框，只留外层卡片框，文字与边框之间才有呼吸空间 */
+  .setblock .setrow{border:none !important; background:transparent !important;
+    padding:15px 0; border-radius:0 !important;}
+  .setblock .setrow + .setrow{border-top:1px solid var(--line) !important;}
+  .setblock .setrow:first-child{padding-top:8px;}
+  .setblock .setrow:last-child{padding-bottom:8px;}
   .setblock:last-child{margin-bottom:0;}
+
+  @media (max-width:699px){
+    .setblock{padding:6px 18px 10px; border-radius:18px;}
+    .setblock .sec-label{margin:16px 0 6px;}
+    .setblock .setrow{padding:14px 0;}
+    .setblock .setrow:first-child{padding-top:7px;}
+    .setblock .setrow:last-child{padding-bottom:7px;}
+  }
 
   @media (min-width:700px){
     /* 瀑布流：两张卡片不等高也能自然错落，不会留大片空白 */
