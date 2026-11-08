@@ -1,6 +1,6 @@
 /* 饼干 · Service Worker
    HTML 走网络优先（保证更新能立刻看到），静态资源走缓存优先。 */
-const CACHE = 'binggan-v104';
+const CACHE = 'binggan-v105';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

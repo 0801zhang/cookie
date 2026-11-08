@@ -4125,7 +4125,8 @@ function viewSettings() {
       <button class="chip on" style="grid-column:1 / -1; padding:12px 6px; font-size:13px; font-weight:600;" id="cloudMergeBtn" ${cloudReady ? '' : 'disabled'}>合并云端（两台都点一次）</button>
       <button class="chip" style="grid-column:1 / -1; padding:11px 6px; font-size:13px;" id="cfgLinkBtn" ${cloudReady ? '' : 'disabled'}>复制配置链接</button>
     </div>
-    <div class="setrow" style="font-size:11px; color:var(--dim); line-height:1.7;">
+    <div class="setrow" style="font-size:11px; color:var(--dim); line-height:1.8;">
+      同步内容：题库卡片 · 卡组 · 复习进度 · 学习日志 · 模考记录 · 刷题记录与错题 · 统计 · 主题设置 · 成语近反义 · 题图<br>
       上次上传：${DB.settings.lastPush ? new Date(DB.settings.lastPush).toLocaleString('zh-CN') : '还没传过'}
     </div>
     <button class="chip" id="diagBtn" style="width:100%; padding:10px; margin-top:6px; font-size:12.5px;">同步诊断（排查用）</button>
@@ -5519,6 +5520,64 @@ function ghHeaders() {
 const b64enc = str => btoa(unescape(encodeURIComponent(str)));
 const b64dec = b64 => decodeURIComponent(escape(atob(b64.replace(/\s/g, ''))));
 
+/* ---------- 同步数据组装：除快照外全量 ---------- */
+async function collectSyncImages(cards, capBytes) {
+  const keys = collectImgKeys(cards || []);
+  const images = {};
+  let bytes = 0, skipped = 0, sent = 0;
+  const cap = capBytes || (3 * 1024 * 1024);
+  for (let i = 0; i < keys.length; i++) {
+    let d = null;
+    try { d = await IMGDB.get(keys[i]); } catch (e) {}
+    if (!d) { skipped++; continue; }
+    if (bytes + d.length > cap) { skipped++; continue; }
+    images[keys[i]] = d; bytes += d.length; sent++;
+    if (i % 3 === 2) await new Promise(function (r) { setTimeout(r, 0); });
+  }
+  return { images: images, total: keys.length, sent: sent, skipped: skipped, bytes: bytes };
+}
+
+/* 全量：卡片、卡组、复习排程、日志、模考、统计、设置、模块、成语近反义、刷题记录、图片 */
+async function buildSyncPayload(withImages) {
+  const o = {};
+  ['v', 'cards', 'decks', 'sched', 'logs', 'sessions', 'stats', 'mods', 'idiomRel', 'idiomRelV', 'lastSnapshot']
+    .forEach(function (k) { if (typeof DB[k] !== 'undefined') o[k] = DB[k]; });
+  o.settings = DB.settings;
+  o.snapshots = [];
+  o.store = store;
+  if (withImages) {
+    const r = await collectSyncImages(o.cards || [], 3 * 1024 * 1024);
+    o.images = r.images;
+    o.imgInfo = { total: r.total, sent: r.sent, skipped: r.skipped, bytes: r.bytes };
+  }
+  o._meta = {
+    ver: (typeof APP_VERSION !== 'undefined' ? APP_VERSION : ''),
+    at: Date.now(),
+    dev: (navigator.userAgent || '').slice(0, 50)
+  };
+  return o;
+}
+
+/* 上传前双重保护：卡片太少 / 刷题记录缩水 */
+function syncGuard(p, silent) {
+  const cardN = (p.cards || []).length;
+  if (cardN < 100) {
+    if (!silent) toast('本机只有 ' + cardN + ' 张卡片，为免覆盖云端已取消上传');
+    return false;
+  }
+  const localRecs = Object.keys((p.store && p.store.cards) || {}).length;
+  const knownRecs = DB.settings.lastPushRecs || 0;
+  if (localRecs === 0 && knownRecs > 0) {
+    if (!silent) toast('本机没有刷题记录，为免覆盖云端已取消上传');
+    return false;
+  }
+  if (knownRecs - localRecs > 20 && localRecs < knownRecs * 0.5) {
+    if (!silent) toast('本机记录（' + localRecs + ' 条）比上次上传（' + knownRecs + ' 条）少很多，为免覆盖云端已取消上传');
+    return false;
+  }
+  return true;
+}
+
 async function ghPush(silent) {
   const g = ghConf();
   if (!g) { if (!silent) toast('先配置同步'); return false; }
@@ -5526,7 +5585,9 @@ async function ghPush(silent) {
     let sha = null;
     const r0 = await fetch(ghApi(), { headers: ghHeaders() });
     if (r0.ok) { const j = await r0.json(); sha = j.sha; }
-    const body = { message: 'sync ' + new Date().toISOString(), content: b64enc(JSON.stringify(DB)) };
+    const payload = await buildSyncPayload(true);
+    if (!syncGuard(payload, silent)) return false;
+    const body = { message: 'sync ' + new Date().toISOString(), content: b64enc(JSON.stringify(payload)) };
     if (sha) body.sha = sha;
     const r = await fetch(ghApi(), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
     if (!r.ok) {
@@ -5585,6 +5646,8 @@ function sbFetch(url, opt, ms) {
 async function sbPush(silent) {
   const b = sbConf();
   if (!b) return false;
+  const payload = await buildSyncPayload(true);
+  if (!syncGuard(payload, silent)) return false;
   try {
     const r = await sbFetch(b.url + '/rest/v1/binggan_data?on_conflict=id', {
       method: 'POST',
@@ -5594,7 +5657,7 @@ async function sbPush(silent) {
       }),
       body: JSON.stringify([{
         id: b.sync,
-        payload: (function () { const o = Object.assign({}, DB); o.snapshots = []; return JSON.stringify(o); })(),
+        payload: JSON.stringify(payload),
         updated_at: new Date().toISOString(),
         device: (navigator.userAgent || 'web').slice(0, 40)
       }])
@@ -5719,30 +5782,15 @@ async function geFind(token, sync) {
 async function gePush(silent) {
   const g = geConf();
   if (!g) return false;
-  /* 瘦身：快照不传、日志截断，避免请求体超出限制 */
-  const slim = Object.assign({}, DB);
-  slim.snapshots = [];
-  /* 学习日志全量传（本地最多保留 2000 条，压缩后占比很小） */
-  /* 刷题进度与统计存在独立的 store 里，必须一起传，否则换设备后进度对不上 */
-  slim.store = store;
-  /* 保护：本机数据明显偏少时不上传，避免把云端覆盖成空库 */
-  const cardN = (slim.cards || []).length;
-  if (cardN < 100) {
-    if (!silent) toast('本机只有 ' + cardN + ' 张卡片，为免覆盖云端已取消上传');
-    return false;
+  const payload = await buildSyncPayload(true);
+  if (!syncGuard(payload, silent)) return false;
+  let packed = await packCloud(payload);
+  /* gist 单文件有上限，超限就丢图片重试，保证结构化数据一定传得上去 */
+  if (packed.d.length > 3.2 * 1024 * 1024 && payload.images && Object.keys(payload.images).length) {
+    payload.images = {};
+    payload.imgInfo.skipped = payload.imgInfo.total;
+    packed = await packCloud(payload);
   }
-  /* 缩水保护：本机刷题记录比上次上传少很多，判定为空设备，禁止覆盖云端 */
-  const localRecs = Object.keys((store && store.cards) || {}).length;
-  const knownRecs = DB.settings.lastPushRecs || 0;
-  if (localRecs === 0 && knownRecs > 0) {
-    if (!silent) toast('本机没有刷题记录，为免覆盖云端已取消上传');
-    return false;
-  }
-  if (knownRecs - localRecs > 20 && localRecs < knownRecs * 0.5) {
-    if (!silent) toast('本机记录（' + localRecs + ' 条）比上次上传（' + knownRecs + ' 条）少很多，为免覆盖云端已取消上传');
-    return false;
-  }
-  const packed = await packCloud(slim);
   const files = { 'binggan.json': { content: JSON.stringify(packed) } };
   try {
     const hit = await geFind(g.token, g.sync);
@@ -6009,8 +6057,15 @@ function applyCloud(d, silent) {
   if (!d || !d.payload) return false;
   try {
     const nd = normalizeBackup(d.payload) || { cards: d.payload.cards, sched: d.payload.sched || {}, settings: d.payload.settings || {} };
+    /* 卡片按 id 取并集：云端没有的本机卡片不丢，云端有的以云端为准 */
+    const mergedCards = (function () {
+      const map = {}, order = [];
+      ((DB.cards) || []).forEach(function (c) { if (c && c.id != null && !map[c.id]) { map[c.id] = c; order.push(c.id); } });
+      ((nd.cards) || []).forEach(function (c) { if (c && c.id != null) { if (!map[c.id]) order.push(c.id); map[c.id] = c; } });
+      return order.map(function (id) { return map[id]; });
+    })();
     DB = Object.assign(defDB(), {
-      cards: nd.cards, decks: nd.decks || defDB().decks,
+      cards: mergedCards, decks: nd.decks || defDB().decks,
       sched: nd.sched, logs: nd.logs, sessions: nd.sessions, stats: nd.stats
     });
     DB.settings = Object.assign(defDB().settings, nd.settings);
@@ -6025,6 +6080,13 @@ function applyCloud(d, silent) {
     CB = DB;
     bootCards();
     saveDB(); applyTheme();
+    try {
+      if (d.payload.images && typeof d.payload.images === 'object' && Object.keys(d.payload.images).length) {
+        restoreImages(d.payload.images, nd.cards).then(function (r) {
+          if (!silent && r && r.ok) setTimeout(function () { toast('已恢复 ' + r.ok + ' 张图片'); }, 900);
+        });
+      }
+    } catch (e) {}
     setTimeout(function () { try { render(); } catch (e) {} }, 60);
     return true;
   } catch (e) { return false; }
@@ -6052,7 +6114,13 @@ function showSyncHint(cloudAt) {
       __cardsDirty = true;
       CB = DB;
       bootCards();
-      saveDB(); applyTheme(); toast('已同步'); setTimeout(function () { try { render(); } catch (e) {} }, 100);
+      saveDB(); applyTheme();
+      try {
+        if (d.payload.images && typeof d.payload.images === 'object' && Object.keys(d.payload.images).length) {
+          restoreImages(d.payload.images, nd.cards);
+        }
+      } catch (e) {}
+      toast('已同步'); setTimeout(function () { try { render(); } catch (e) {} }, 100);
     });
   } catch (e) {}
   return;
@@ -7902,8 +7970,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.8.5';
-const BUILD_STAMP = '11-08 22:55';
+const APP_VERSION = '1.9.0';
+const BUILD_STAMP = '11-08 23:05';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
