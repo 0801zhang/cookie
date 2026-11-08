@@ -5857,21 +5857,13 @@ async function cloudRestore() {
   const d = await cloudPull(true);
   if (!d) return;
   confirmSheet('从云端恢复', '云端数据会覆盖这台设备上的全部内容，确定？', '覆盖并恢复', () => {
-    const nd = normalizeBackup(d.payload) || { cards: d.payload.cards, sched: d.payload.sched || {}, settings: d.payload.settings || {} };
-    DB = Object.assign(defDB(), {
-      cards: nd.cards, decks: nd.decks || defDB().decks,
-      sched: nd.sched, logs: nd.logs, sessions: nd.sessions, stats: nd.stats
-    });
-    DB.settings = Object.assign(defDB().settings, nd.settings);
-    DB.mods = Object.assign(modsDefault(), nd.mods || {});
-    if (d.payload && d.payload.store && d.payload.store.cards) {
-      store = d.payload.store;
-      try { save(); } catch (e) {}
+    const recs = Object.keys(((d.payload && d.payload.store && d.payload.store.cards) || {})).length;
+    if (applyCloud(d, false)) {
+      toast('已恢复' + (recs ? '（含 ' + recs + ' 条刷题记录）' : ''));
+      go('home');
+    } else {
+      toast('恢复失败，云端数据可能有误');
     }
-    __cardsDirty = true;
-    CB = DB;
-    bootCards();
-    saveDB(); applyTheme(); toast('已恢复'); go('home');
   });
 }
 
@@ -5886,11 +5878,42 @@ async function pullOnBoot() {
     const local = DB.settings.lastPush || 0;
     if (!cloudAt || cloudAt <= local + 60000) return;
     __cloudNewer = d;
+    const localRec = Object.keys((store && store.cards) || {}).length;
+    const cloudRec = Object.keys(((d.payload && d.payload.store && d.payload.store.cards) || {})).length;
+    /* 本机没有刷题记录、云端有：直接拉下来，不用问 */
+    if (localRec === 0 && cloudRec > 0) {
+      if (applyCloud(d, true)) { toast('已从云端同步 ' + cloudRec + ' 条刷题记录'); return; }
+    }
     showSyncHint(cloudAt);
   } catch (e) {}
 }
 
 let __cloudNewer = null;
+
+/* 应用云端数据（silent=true 时不弹确认） */
+function applyCloud(d, silent) {
+  if (!d || !d.payload) return false;
+  try {
+    const nd = normalizeBackup(d.payload) || { cards: d.payload.cards, sched: d.payload.sched || {}, settings: d.payload.settings || {} };
+    DB = Object.assign(defDB(), {
+      cards: nd.cards, decks: nd.decks || defDB().decks,
+      sched: nd.sched, logs: nd.logs, sessions: nd.sessions, stats: nd.stats
+    });
+    DB.settings = Object.assign(defDB().settings, nd.settings);
+    DB.mods = Object.assign(modsDefault(), nd.mods || {});
+    if (d.payload.store && d.payload.store.cards) {
+      store = d.payload.store;
+      try { save(); } catch (e) {}
+    }
+    DB.settings.lastPush = Date.now();
+    __cardsDirty = true;
+    CB = DB;
+    bootCards();
+    saveDB(); applyTheme();
+    setTimeout(function () { try { render(); } catch (e) {} }, 60);
+    return true;
+  } catch (e) { return false; }
+}
 
 function showSyncHint(cloudAt) {
   try {
@@ -7762,8 +7785,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.6.8';
-const BUILD_STAMP = '2026-11-09 17:05';
+const APP_VERSION = '1.7.0';
+const BUILD_STAMP = '2026-11-09 18:05';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8443,15 +8466,16 @@ function openCardMenu(c) {
   }
   @media (min-width:800px){
     /* 瀑布流：两张卡片不等高也能自然错落，不会留大片空白 */
-    .setcols{column-count:2; column-gap:16px; max-width:1020px; margin:0 auto;}
+    .setcols{column-count:2; column-gap:20px; column-fill:balance; max-width:1020px; margin:0 auto;}
     .setcols > *:not(.setblock){column-span:all; -webkit-column-span:all;}
     .setblock{break-inside:avoid; -webkit-column-break-inside:avoid;
-      display:inline-block; width:100%; vertical-align:top;
-      background:var(--card); border:1px solid var(--line); border-radius:18px;
-      padding:2px 15px 12px; margin:0 0 16px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
-    .setblock .sec-label{margin-top:12px; padding-left:0; font-weight:600;}
+      background:var(--card); border:1px solid var(--line); border-radius:20px;
+      padding:8px 20px 16px; margin:0 0 18px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
+    .setblock .sec-label{margin:14px 0 4px; padding-left:0; font-weight:600; letter-spacing:.2px;}
     .setblock .list{background:transparent; border:none; border-radius:0;}
-    .setblock .setrow{padding-left:0; padding-right:0;}
+    .setblock .setrow{padding-left:0; padding-right:0; padding-top:14px; padding-bottom:14px;}
+    .setblock .setrow:first-child{padding-top:6px;}
+    .setblock .setrow:last-child{padding-bottom:2px;}
     .setblock:last-child{margin-bottom:0;}
     .list .setrow, .list .crow{min-width:0;}
     .setrow{padding-left:0; padding-right:0;}
