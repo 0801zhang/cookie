@@ -4242,36 +4242,71 @@ function viewReport() {
   `;
 }
 
-/* 设置页两栏：按实际高度贪心分配，左右尽量一样长 */
+/* 设置页两栏：先按全宽量高度分配，再按窄列真实高度重排一次 */
 function layoutSettingsColumns() {
   try {
     if (S.view !== 'settings') return;
     const wrap = document.querySelector('.setcols');
     if (!wrap || wrap.dataset.arranged === '1') return;
     if (window.innerWidth < 700) return;
-    const all = Array.prototype.slice.call(wrap.children);
-    const blocks = all.filter(function (el) {
+
+    const blocks = Array.prototype.slice.call(wrap.children).filter(function (el) {
       return el.classList && el.classList.contains('setblock');
     });
     if (blocks.length < 2) return;
 
-    const hs = blocks.map(function (b) { return b.getBoundingClientRect().height || 0; });
+    const count = blocks.length;
+    const measure = function (arr) {
+      return arr.map(function (b) { return b.getBoundingClientRect().height || 0; });
+    };
+
+    /* 按高度从大到小分到较矮的一栏，列内再恢复原顺序 */
+    const place = function (hs) {
+      const idx = new Map();
+      blocks.forEach(function (b, i) { idx.set(b, i); });
+      const order = blocks.map(function (b, i) { return { b: b, h: hs[i] || 0 }; })
+        .sort(function (x, y) { return y.h - x.h; });
+      const A = [], B = [];
+      let hA = 0, hB = 0;
+      order.forEach(function (o) {
+        if (hA <= hB) { A.push(o.b); hA += o.h; }
+        else { B.push(o.b); hB += o.h; }
+      });
+      A.sort(function (x, y) { return idx.get(x) - idx.get(y); });
+      B.sort(function (x, y) { return idx.get(x) - idx.get(y); });
+      return { A: A, B: B, diff: Math.abs(hA - hB) };
+    };
+
     const colA = document.createElement('div'), colB = document.createElement('div');
     colA.className = 'setcol'; colB.className = 'setcol';
-    let hA = 0, hB = 0;
-    blocks.forEach(function (b, i) {
-      /* 先放短的那一栏，末尾几块高度差会自然抹平 */
-      if (hA <= hB) { colA.appendChild(b); hA += hs[i]; }
-      else { colB.appendChild(b); hB += hs[i]; }
+
+    const other = Array.prototype.slice.call(wrap.children).filter(function (el) {
+      return !(el.classList && el.classList.contains('setblock'));
     });
-    all.forEach(function (el) {
-      if (el.classList && el.classList.contains('setblock')) return;
-      wrap.removeChild(el);
-      wrap.insertBefore(el, wrap.firstChild);
-    });
+    /* 非卡片的元素留在顶部，不要删 */
+    other.forEach(function (el) { try { wrap.insertBefore(el, wrap.firstChild); } catch (e) {} });
+
+    const first = place(measure(blocks));
+    first.A.forEach(function (b) { colA.appendChild(b); });
+    first.B.forEach(function (b) { colB.appendChild(b); });
     wrap.appendChild(colA);
     wrap.appendChild(colB);
     wrap.dataset.arranged = '1';
+
+    /* 第二帧：此时已是窄列宽度，用真实高度再排一次 */
+    requestAnimationFrame(function () {
+      try {
+        if (!colA.parentNode) return;
+        const hs = new Map();
+        count && blocks.forEach(function (b) { hs.set(b, b.getBoundingClientRect().height || 0); });
+        const hs2 = blocks.map(function (b) { return hs.get(b) || 0; });
+        const second = place(hs2);
+        if (second.diff < first.diff - 8) {
+          second.A.forEach(function (b) { colA.appendChild(b); });
+          second.B.forEach(function (b) { colB.appendChild(b); });
+        }
+      } catch (e) {}
+    });
   } catch (e) {}
 }
 
@@ -6857,82 +6892,81 @@ function mountOneFab(id, glyph, onClick, bg, defGap) {
     el.id = id;
     el.className = 'mod-fab';
     el.innerHTML = '<span>' + glyph + '</span>';
-    el.style.background = bg;
     document.body.appendChild(el);
   }
+  el.style.background = bg;
+  /* 每次渲染只更新回调，绝不再重复绑定事件 */
+  el._fabClick = onClick;
+
   const m = M();
   if (!m.fabs) m.fabs = {};
 
-  function clamp(x, y) {
+  el._fabSetPos = function (x, y) {
     const w = el.offsetWidth || 52, h = el.offsetHeight || 52;
-    return {
-      x: Math.max(6, Math.min(window.innerWidth - w - 6, x)),
-      y: Math.max(6, Math.min(window.innerHeight - h - 6, y))
-    };
-  }
-  function setPos(x, y) {
-    const c = clamp(x, y);
-    el.style.left = c.x + 'px';
-    el.style.top = c.y + 'px';
+    const cx = Math.max(6, Math.min(window.innerWidth - w - 6, x));
+    const cy = Math.max(6, Math.min(window.innerHeight - h - 6, y));
+    el.style.left = cx + 'px';
+    el.style.top = cy + 'px';
     el.style.right = 'auto';
     el.style.bottom = 'auto';
+  };
+
+  if (!el._fabBound) {
+    el._fabBound = true;
+    let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0, lx = 0, ly = 0;
+    let pid = null, captured = false;
+
+    const release = function () {
+      if (captured && pid !== null) { try { el.releasePointerCapture(pid); } catch (e) {} }
+      captured = false; pid = null;
+    };
+
+    el.addEventListener('pointerdown', function (e) {
+      dragging = true;
+      sx = lx = e.clientX; sy = ly = e.clientY;
+      pid = e.pointerId;
+      const r = el.getBoundingClientRect();
+      ox = r.left; oy = r.top;
+    });
+
+    el.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      lx = e.clientX; ly = e.clientY;
+      const dx = lx - sx, dy = ly - sy;
+      if (Math.abs(dx) < 12 && Math.abs(dy) < 12) return;
+      if (!captured && pid !== null) { try { el.setPointerCapture(pid); captured = true; } catch (err) {} }
+      if (el._fabSetPos) el._fabSetPos(ox + dx, oy + dy);
+    });
+
+    const finish = function () {
+      if (!dragging) return;
+      dragging = false;
+      release();
+      const dist = Math.sqrt((lx - sx) * (lx - sx) + (ly - sy) * (ly - sy));
+      if (dist > 12) {
+        const r = el.getBoundingClientRect();
+        const mm = M();
+        if (!mm.fabs) mm.fabs = {};
+        mm.fabs[el.id] = { x: r.left, y: r.top };
+        try { saveDB(); } catch (err) {}
+      } else {
+        try { if (el._fabClick) el._fabClick(); }
+        catch (err) { try { toast('打开失败：' + ((err && err.message) || err)); } catch (e2) {} }
+      }
+    };
+
+    el.addEventListener('pointerup', finish);
+    el.addEventListener('pointercancel', function () { dragging = false; release(); });
+
+    window.addEventListener('resize', function () {
+      const r = el.getBoundingClientRect();
+      if (el._fabSetPos) el._fabSetPos(r.left, r.top);
+    });
   }
 
   const saved = m.fabs[id];
-  if (saved && typeof saved.x === 'number') setPos(saved.x, saved.y);
-  else setPos(window.innerWidth - 68, window.innerHeight - defGap);
-
-  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0, lx = 0, ly = 0;
-  let pid = null, captured = false;
-
-  el.addEventListener('pointerdown', function (e) {
-    dragging = true;
-    sx = lx = e.clientX; sy = ly = e.clientY;
-    pid = e.pointerId;
-    const r = el.getBoundingClientRect();
-    ox = r.left; oy = r.top;
-  });
-
-  el.addEventListener('pointermove', function (e) {
-    if (!dragging) return;
-    lx = e.clientX; ly = e.clientY;
-    const dx = lx - sx, dy = ly - sy;
-    /* 超过 12px 才认为是拖动，平板上手指按下的抖动不会被误判 */
-    if (Math.abs(dx) < 12 && Math.abs(dy) < 12) return;
-    /* 只有真的开始拖了才捕获指针 */
-    if (!captured && pid !== null) {
-      try { el.setPointerCapture(pid); captured = true; } catch (err) {}
-    }
-    setPos(ox + dx, oy + dy);
-  });
-
-  function release() {
-    if (captured && pid !== null) {
-      try { el.releasePointerCapture(pid); } catch (err) {}
-    }
-    captured = false; pid = null;
-  }
-
-  function finish() {
-    if (!dragging) return;
-    dragging = false;
-    release();
-    const dist = Math.sqrt((lx - sx) * (lx - sx) + (ly - sy) * (ly - sy));
-    if (dist > 12) {
-      const r = el.getBoundingClientRect();
-      m.fabs[id] = { x: r.left, y: r.top };
-      try { saveDB(); } catch (err) {}
-    } else {
-      try { onClick(); } catch (err) { try { toast('打开失败：' + ((err && err.message) || err)); } catch (e2) {} }
-    }
-  }
-  el.addEventListener('pointerup', finish);
-  el.addEventListener('pointercancel', function () { dragging = false; release(); });
-
-  window.addEventListener('resize', function () {
-    const r = el.getBoundingClientRect();
-    setPos(r.left, r.top);
-  });
+  if (saved && typeof saved.x === 'number') el._fabSetPos(saved.x, saved.y);
+  else el._fabSetPos(window.innerWidth - 68, window.innerHeight - defGap);
 }
 
 function mountFab() {
@@ -8147,10 +8181,7 @@ const EXTRA = {
               <span class="g"><b>数据回滚</b><span>${(DB.snapshots || []).length} 份快照可退</span></span>
               <span style="color:var(--dim);">›</span>
             </button>
-            <div class="ver-row">
-              <span>版本 <b>v${APP_VERSION}</b> · 构建 ${BUILD_STAMP}</span>
-              <span>${'serviceWorker' in navigator ? 'PWA' : '网页'}</span>
-            </div>
+
             <div class="setrow" id="usageRow" style="width:100%; cursor:pointer;">
               <span class="g"><b>存储占用</b><span id="usageTxt">本地 ${fmtBytes(lsBytes())} / 5 MB · 离线缓存 ${fmtBytes(__idbBytes)}${lsBytes() > 3.5 * 1024 * 1024 ? ' · 偏高，建议导出备份' : ''}</span></span>
               <span id="usagePct" style="color:${lsBytes() > 3.5 * 1024 * 1024 ? '#e0455f' : 'var(--dim)'};">${Math.round(lsBytes() / (5 * 1024 * 1024) * 100)}%</span>
@@ -8296,8 +8327,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.12.5';
-const BUILD_STAMP = '11-09 04:40';
+const APP_VERSION = '1.13.1';
+const BUILD_STAMP = '11-09 05:20';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
