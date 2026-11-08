@@ -425,7 +425,12 @@ sub{font-size:.7em; vertical-align:sub; line-height:0;}
 </style>
 </head>
 <body>
-<div id="app"></div>
+<div id="app"><div class="boot-splash">
+  <div class="boot-logo">🍪</div>
+  <div class="boot-name">饼干</div>
+  <div class="boot-dots"><i></i><i></i><i></i></div>
+  <div class="boot-hint">正在加载题库…</div>
+</div></div>
 
 <script>
 /* =======================================================================
@@ -2984,18 +2989,68 @@ function loadDB() {
   }
   return defDB();
 }
-function saveDB() {
+/* localStorage 快满时的紧急清理：搬走卡片副本、剥离快照全量数据 */
+function emergencyClean() {
+  let freed = 0;
   try {
-    __saveCount++;
-    if (Array.isArray(DB.logs) && DB.logs.length > 2000) DB.logs = DB.logs.slice(-2000);
-    const base = Object.assign({}, DB);
-    delete base.cards;
-    delete base.snapshots;
-    localStorage.setItem(CARD_KEY, JSON.stringify(base));
+    if (CARDSDB && CARDSDB_OK !== false) {
+      const v = localStorage.getItem(CARDS_KEY);
+      if (v) { localStorage.removeItem(CARDS_KEY); freed += v.length * 2; }
+    }
+  } catch (e) {}
+  try {
+    const raw = localStorage.getItem(SNAP_KEY);
+    if (raw && raw.length > 20000) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.some(function (x) { return x && x.data; })) {
+        const slim = arr.map(function (x) { const o = Object.assign({}, x); delete o.data; delete o.legacy; return o; });
+        const txt = JSON.stringify(slim);
+        localStorage.setItem(SNAP_KEY, txt);
+        freed += (raw.length - txt.length) * 2;
+      }
+    }
+  } catch (e) {}
+  return freed;
+}
+
+function saveDB() {
+  __saveCount++;
+  if (Array.isArray(DB.logs) && DB.logs.length > 2000) DB.logs = DB.logs.slice(-2000);
+  const base = Object.assign({}, DB);
+  delete base.cards;
+  delete base.snapshots;
+  /* 草稿里可能存了手写图片，体积会失控，超限就只留最近 40 题 */
+  try {
+    const drafts = base.mods && base.mods.drafts;
+    if (drafts) {
+      let total = 0;
+      Object.keys(drafts).forEach(function (k) { total += JSON.stringify(drafts[k] || []).length; });
+      if (total > 1.2 * 1024 * 1024) {
+        const keep = Object.keys(drafts).slice(-40);
+        const nd = {};
+        keep.forEach(function (k) { nd[k] = drafts[k]; });
+        base.mods = Object.assign({}, base.mods, { drafts: nd });
+        DB.mods.drafts = nd;
+      }
+    }
+  } catch (e) {}
+  let json;
+  try { json = JSON.stringify(base); } catch (e) { return scheduleSync(); }
+  try {
+    localStorage.setItem(CARD_KEY, json);
     if (__cardsDirty || __saveCount % 50 === 0) saveCards();
     if (__saveCount % 25 === 0) saveSnaps();
   } catch (e) {
-    toast('存储空间不足，请先导出备份');
+    /* 先清理再重试一次，很多时候是卡片副本或旧快照占着地方 */
+    const freed = emergencyClean();
+    let ok = false;
+    if (freed > 0) {
+      try { localStorage.setItem(CARD_KEY, json); ok = true; } catch (e2) { ok = false; }
+    }
+    if (!ok) {
+      const sz = json.length * 2;
+      toast('写入失败（' + ((e && e.name) || '未知') + '，数据 ' + fmtBytes(sz) + '，本地已用 ' + fmtBytes(lsBytes()) + '）');
+    }
   }
   scheduleSync();
 }
@@ -4401,6 +4456,8 @@ function resetAllFlow() {
     el.querySelector('#raOk').onclick = () => {
       if (el.querySelector('#raVal').value.trim() !== '清空') { toast('请输入「清空」'); return; }
       localStorage.removeItem(CARD_KEY);
+      try { localStorage.removeItem(CARDS_KEY); } catch (e) {}
+      try { CARDSDB.del('all').catch(function () {}); } catch (e) {}
       DB = defDB(); CB = DB; __cardsDirty = true; bootCards();
 try { cfgParseFromUrl(); } catch (e) {}
       saveDB(); close(); toast('已恢复初始状态'); SEL.clear(); go('home');
@@ -5156,6 +5213,7 @@ function bind() {
   if ($('#cloudPushBtn')) $('#cloudPushBtn').onclick = () => cloudPush(false);
   if ($('#cloudPullBtn')) $('#cloudPullBtn').onclick = cloudRestore;
   if ($('#diagBtn')) $('#diagBtn').onclick = () => runDiag();
+  if ($('#usageRow')) $('#usageRow').onclick = () => storageBreakdown();
   if ($('#cfgLinkBtn')) $('#cfgLinkBtn').onclick = () => {
     const link = cfgEncode();
     if (!link) { toast('先填好配置'); return; }
@@ -5539,6 +5597,36 @@ function fetchT(url, opt, ms) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), ms || 20000);
   return fetch(url, Object.assign({}, opt || {}, { signal: ctl.signal })).finally(() => clearTimeout(t));
+}
+
+/* 文本级 gzip（用于快照落盘） */
+async function packText(text) {
+  try {
+    if (typeof CompressionStream === 'function') {
+      const cs = new CompressionStream('gzip');
+      const buf = await new Response(new Blob([text]).stream().pipeThrough(cs)).arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+      return JSON.stringify({ z: 1, d: btoa(bin), raw: text.length });
+    }
+  } catch (e) {}
+  return text;
+}
+
+async function unpackText(stored) {
+  if (!stored) return null;
+  if (stored.charAt(0) !== '{') return stored;
+  let o;
+  try { o = JSON.parse(stored); } catch (e) { return stored; }
+  if (!o || !o.z) return stored;
+  const bin = atob(o.d);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  if (typeof DecompressionStream !== 'function') throw new Error('当前浏览器不支持解压');
+  const ds = new DecompressionStream('gzip');
+  const buf = await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer();
+  return new TextDecoder().decode(buf);
 }
 
 /* 云端打包：支持 gzip 压缩，1.2MB 的题库能压到 200KB 左右 */
@@ -7467,9 +7555,9 @@ const EXTRA = {
               <span>版本 <b>v${APP_VERSION}</b> · 构建 ${BUILD_STAMP}</span>
               <span>${'serviceWorker' in navigator ? 'PWA' : '网页'}</span>
             </div>
-            <div class="setrow" style="width:100%;">
-              <span class="g"><b>存储占用</b><span id="usageTxt">${fmtBytes(storageUsage())} / 约 5 MB${storageUsage() > 3.5 * 1024 * 1024 ? ' · 偏高，建议导出备份' : ''}</span></span>
-              <span id="usagePct" style="color:${storageUsage() > 3.5 * 1024 * 1024 ? '#e0455f' : 'var(--dim)'};">${Math.round(storageUsage() / (5 * 1024 * 1024) * 100)}%</span>
+            <div class="setrow" id="usageRow" style="width:100%; cursor:pointer;">
+              <span class="g"><b>存储占用</b><span id="usageTxt">本地 ${fmtBytes(lsBytes())} / 5 MB · 离线缓存 ${fmtBytes(__idbBytes)}${lsBytes() > 3.5 * 1024 * 1024 ? ' · 偏高，建议导出备份' : ''}</span></span>
+              <span id="usagePct" style="color:${lsBytes() > 3.5 * 1024 * 1024 ? '#e0455f' : 'var(--dim)'};">${Math.round(lsBytes() / (5 * 1024 * 1024) * 100)}%</span>
             </div>
           </div>`;
         first.parentNode.insertBefore(wrap, first);
@@ -7549,6 +7637,59 @@ function storageUsage() {
   });
   return bytes;
 }
+function storageBreakdown() {
+  const rows = [];
+  [['主库（进度/日志/设置）', CARD_KEY], ['卡片旧副本', CARDS_KEY], ['刷题记录', STORE_KEY], ['快照旧数据', SNAP_KEY]].forEach(function (x) {
+    let v = null;
+    try { v = localStorage.getItem(x[1]); } catch (e) {}
+    rows.push({ n: x[0], s: v ? fmtBytes(v.length * 2) : '空', big: v ? v.length * 2 : 0 });
+  });
+  rows.push({ n: '离线缓存总计', s: fmtBytes(__idbBytes), big: __idbBytes });
+  const cardN = (DB.cards || []).length;
+  const snapN = (DB.snapshots || []).length;
+  let selfTest = '正常';
+  try {
+    localStorage.setItem('__probe', '1');
+    localStorage.removeItem('__probe');
+  } catch (e) { selfTest = '写入失败：' + ((e && e.name) || '未知'); }
+  let mainSize = 0;
+  try { mainSize = JSON.stringify(Object.assign({}, DB, { cards: undefined, snapshots: undefined })).length * 2; } catch (e) {}
+  sheet('<h3>存储明细</h3>' +
+    '<div class="sdesc">本地剩余 ' + fmtBytes(5 * 1024 * 1024 - lsBytes()) + ' · 卡片 ' + cardN + ' 张 · 快照 ' + snapN + ' 份</div>' +
+    '<div class="sdesc" style="margin-top:6px; color:' + (selfTest === '正常' ? 'var(--dim)' : '#e0455f') + ';">写入自检：' + escHTML(selfTest) + ' · 待写入主库 ' + fmtBytes(mainSize) + '</div>' +
+    '<div class="list" style="gap:0; margin-top:12px;">' +
+    rows.map(function (r) {
+      return '<div class="setrow"><span class="g"><b>' + escHTML(r.n) + '</b></span><span style="color:' +
+        (r.big > 1024 * 1024 ? '#e0455f' : 'var(--dim)') + ';">' + r.s + '</span></div>';
+    }).join('') +
+    '</div>' +
+    '<div class="sdesc" style="margin-top:14px; line-height:1.8;">' +
+    '只有「本地」那部分受 5 MB 限制，离线缓存不存在配额问题。<br>' +
+    '若主库异常大，可用「导出备份」后清空重来。</div>' +
+    '<button class="chip" id="stClear" style="width:100%; padding:11px; margin-top:12px;">清理旧数据（保留卡片与进度）</button>',
+  function (el, close) {
+    el.querySelector('#stClear').onclick = function () {
+      let freed = 0;
+      try {
+        const v = localStorage.getItem(CARDS_KEY);
+        if (v) { localStorage.removeItem(CARDS_KEY); freed += v.length * 2; }
+      } catch (e) {}
+      try {
+        const raw = localStorage.getItem(SNAP_KEY);
+        if (raw && raw.indexOf('"data"') >= 0) {
+          const arr = JSON.parse(raw).map(function (x) { const o = Object.assign({}, x); delete o.data; delete o.legacy; return o; });
+          const t = JSON.stringify(arr);
+          localStorage.setItem(SNAP_KEY, t);
+          freed += (raw.length - t.length) * 2;
+        }
+      } catch (e) {}
+      close();
+      toast(freed > 0 ? ('已清理 ' + fmtBytes(freed)) : '没有可清理的旧数据');
+      setTimeout(function () { try { render(); } catch (e) {} }, 200);
+    };
+  });
+}
+
 function fmtBytes(n) {
   if (n < 1024) return n + ' B';
   if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
@@ -7559,8 +7700,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.5.0';
-const BUILD_STAMP = '2026-11-09 12:05';
+const APP_VERSION = '1.6.5';
+const BUILD_STAMP = '2026-11-09 15:30';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8253,6 +8394,16 @@ function openCardMenu(c) {
     .stage .flip-inner .face{min-height:300px;}
   }
   html, body{max-width:100%; overflow-x:hidden;}
+  .boot-splash{min-height:78vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;}
+  .boot-logo{font-size:52px; animation:bootPop .9s ease-in-out infinite alternate;}
+  .boot-name{font-size:20px; font-weight:700; letter-spacing:.5px; color:var(--sub);}
+  .boot-dots{display:flex; gap:6px; margin-top:2px;}
+  .boot-dots i{width:7px; height:7px; border-radius:50%; background:var(--pink); opacity:.35; animation:bootDot 1.1s infinite;}
+  .boot-dots i:nth-child(2){animation-delay:.18s;}
+  .boot-dots i:nth-child(3){animation-delay:.36s;}
+  .boot-hint{font-size:12px; color:var(--dim); margin-top:2px;}
+  @keyframes bootDot{0%,100%{opacity:.25; transform:translateY(0);}50%{opacity:1; transform:translateY(-3px);}}
+  @keyframes bootPop{from{transform:scale(.94);}to{transform:scale(1.04);}}
   `;
   const st = document.createElement('style');
   st.textContent = css;
@@ -10186,10 +10337,98 @@ function openIdiomCard(c) {
 })();
 
 /* ==========================================================================
+   卡片数据迁移到 IndexedDB（localStorage 只留主库，避免 5MB 配额爆掉）
+   ========================================================================== */
+
+var CARDSDB = (function () {
+  let dbp = null;
+  function open() {
+    if (dbp) return dbp;
+    dbp = new Promise(function (res, rej) {
+      if (!window.indexedDB) { rej(new Error('no-idb')); return; }
+      const req = indexedDB.open('binggan_data', 1);
+      req.onupgradeneeded = function () {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('cards')) db.createObjectStore('cards');
+      };
+      req.onsuccess = function () { res(req.result); };
+      req.onerror = function () { rej(req.error); };
+    });
+    return dbp;
+  }
+  function tx(mode, fn) {
+    return open().then(function (db) {
+      return new Promise(function (res, rej) {
+        let t;
+        try { t = db.transaction('cards', mode); } catch (e) { rej(e); return; }
+        const st = t.objectStore('cards');
+        let r;
+        try { r = fn(st); } catch (e) { rej(e); return; }
+        t.oncomplete = function () { res(r && r.result); };
+        t.onerror = function () { rej(t.error); };
+        t.onabort = function () { rej(t.error); };
+      });
+    });
+  }
+  return {
+    put: function (k, v) { return tx('readwrite', function (st) { return st.put(v, k); }); },
+    get: function (k) { return tx('readonly', function (st) { return st.get(k); }); },
+    del: function (k) { return tx('readwrite', function (st) { return st.delete(k); }); }
+  };
+})();
+
+var CARDSDB_OK = null;
+
+/* 覆盖：卡片写 IndexedDB，失败才退回 localStorage */
+function saveCards() {
+  /* 早期调用时 IndexedDB 封装可能还没初始化，先跳过，改动标记保留 */
+  if (!CARDSDB) { __cardsDirty = true; return; }
+  const json = JSON.stringify(DB.cards || []);
+  __cardsDirty = false;
+  if (CARDSDB_OK === false) {
+    try { localStorage.setItem(CARDS_KEY, json); } catch (e) {}
+    return;
+  }
+  CARDSDB.put('all', json).then(function () {
+    CARDSDB_OK = true;
+  }).catch(function () {
+    CARDSDB_OK = false;
+    try { localStorage.setItem(CARDS_KEY, json); } catch (e) {}
+  });
+}
+
+/* 启动时加载卡片：优先 IndexedDB，首次则把 localStorage 的旧数据搬过去 */
+async function loadCardsAsync() {
+  if (!CARDSDB) return;
+  let idbRaw = null;
+  try { idbRaw = await CARDSDB.get('all'); CARDSDB_OK = true; }
+  catch (e) { CARDSDB_OK = false; }
+
+  let localRaw = null;
+  try { localRaw = localStorage.getItem(CARDS_KEY); } catch (e) {}
+
+  if (idbRaw) {
+    try { DB.cards = JSON.parse(idbRaw); } catch (e) {}
+    if (localRaw) { try { localStorage.removeItem(CARDS_KEY); } catch (e) {} }
+    return;
+  }
+  if (localRaw) {
+    try { DB.cards = JSON.parse(localRaw); } catch (e) { return; }
+    if (CARDSDB_OK !== false) {
+      try {
+        await CARDSDB.put('all', localRaw);
+        try { localStorage.removeItem(CARDS_KEY); } catch (e) {}
+      } catch (e) { CARDSDB_OK = false; }
+    }
+    return;
+  }
+}
+
+/* ==========================================================================
    优化一：快照改存 IndexedDB（解决 localStorage 配额被快照挤爆）
    ========================================================================== */
 
-const SNAPDB = (function () {
+var SNAPDB = (function () {
   let dbp = null;
   function open() {
     if (dbp) return dbp;
@@ -10297,7 +10536,7 @@ function pruneSnaps() {
   const drop = arr.slice(0, Math.max(0, arr.length - 2));
   DB.snapshots = arr.slice(-2);
   drop.forEach(function (s) {
-    if (s.key && !s.legacy) { try { SNAPDB.del(s.key).catch(function () {}); } catch (e) {} }
+    if (s.key && !s.legacy && SNAPDB) { try { SNAPDB.del(s.key).catch(function () {}); } catch (e) {} }
   });
   try { saveSnaps(); } catch (e) {}
 }
@@ -10331,9 +10570,11 @@ function takeSnapshot(reason) {
   pruneSnaps();
   saveDB();
 
-  if (__snapIdbOK === false) { fallbackSnap(meta, payload); return; }
+  if (!SNAPDB || __snapIdbOK === false) { fallbackSnap(meta, payload); return; }
 
-  SNAPDB.put(meta.key, payload).then(function () {
+  packText(payload).then(function (txt) {
+    return SNAPDB.put(meta.key, txt);
+  }).then(function () {
     __snapIdbOK = true;
     try { saveSnaps(); } catch (e) {}
     refreshIdbBytes();
@@ -10346,7 +10587,10 @@ function takeSnapshot(reason) {
 function fallbackSnap(meta, payload) {
   meta.data = payload;
   try { localStorage.setItem(SNAP_KEY, JSON.stringify(DB.snapshots || [])); }
-  catch (e) { toast('存储空间不足，请先导出备份'); }
+  catch (e) {
+    /* 快照存不下就放弃这份，不打扰用户：进度数据本身在别处 */
+    try { delete meta.data; } catch (er) {}
+  }
   try { saveSnaps(); } catch (e) {}
 }
 
@@ -10361,8 +10605,9 @@ function readSnapshot(meta) {
     if (!meta.key) { rej(new Error('no-key')); return; }
     SNAPDB.get(meta.key).then(function (v) {
       if (v == null) { rej(new Error('empty')); return; }
-      try { res(typeof v === 'string' ? JSON.parse(v) : v); }
-      catch (e) { rej(e); }
+      return unpackText(typeof v === 'string' ? v : JSON.stringify(v)).then(function (txt) {
+        try { res(JSON.parse(txt)); } catch (e) { rej(e); }
+      });
     }).catch(rej);
   });
 }
@@ -10380,6 +10625,21 @@ function applySnapshot(d) {
 }
 
 /* 旧 SNAP_KEY → IndexedDB 一次性迁移，成功后删除旧 key */
+/* 旧快照是明文存的，启动时压缩一遍省空间 */
+function recompressSnaps() {
+  const list = (DB.snapshots || []).filter(function (x) { return x && x.key; });
+  if (!list.length) return Promise.resolve();
+  return list.reduce(function (p, m) {
+    return p.then(function () {
+      return SNAPDB.get(m.key).then(function (v) {
+        if (typeof v !== 'string' || v.charAt(0) !== '{') return null;
+        try { if (JSON.parse(v).z) return null; } catch (e) { return null; }
+        return packText(v).then(function (txt) { return SNAPDB.put(m.key, txt); });
+      }).catch(function () {});
+    });
+  }, Promise.resolve()).then(function () { refreshIdbBytes(); });
+}
+
 function initSnapMigrate() {
   if (!__legacySnaps.length) { refreshIdbBytes(); return Promise.resolve(); }
   const list = __legacySnaps.slice();
@@ -10410,23 +10670,29 @@ function initSnapMigrate() {
 }
 
 /* ---------- 存储占用：localStorage + IndexedDB ---------- */
-function storageUsage() {
+function lsBytes() {
   let bytes = 0;
-  [CARD_KEY, CARDS_KEY, SNAP_KEY].forEach(function (k) {
+  [CARD_KEY, CARDS_KEY, SNAP_KEY, STORE_KEY].forEach(function (k) {
     const v = localStorage.getItem(k);
     if (v) bytes += v.length * 2;
   });
-  return bytes + __idbBytes;
+  return bytes;
+}
+function storageUsage() {
+  return lsBytes() + __idbBytes;
 }
 
 function refreshIdbBytes() {
+  if (!SNAPDB) return Promise.resolve(0);
   return Promise.all([
     SNAPDB.all().catch(function () { return []; }),
-    idbAll('binggan_img', 'img').catch(function () { return []; })
+    idbAll('binggan_img', 'img').catch(function () { return []; }),
+    idbAll('binggan_data', 'cards').catch(function () { return []; })
   ]).then(function (r) {
     let b = 0;
     (r[0] || []).forEach(function (v) { if (typeof v === 'string') b += v.length * 2; });
     (r[1] || []).forEach(function (v) { if (typeof v === 'string') b += v.length; });
+    (r[2] || []).forEach(function (v) { if (typeof v === 'string') b += v.length * 2; });
     __idbBytes = b;
     updateUsageUI();
     return b;
@@ -10436,8 +10702,9 @@ function refreshIdbBytes() {
 function updateUsageUI() {
   const el = document.getElementById('usageTxt');
   if (!el) return;
-  const v = storageUsage();
-  el.textContent = fmtBytes(v) + ' / 约 5 MB' + (v > 3.5 * 1024 * 1024 ? ' · 偏高，建议导出备份' : '');
+  const v = lsBytes();
+  el.textContent = '本地 ' + fmtBytes(v) + ' / 5 MB · 离线缓存 ' + fmtBytes(__idbBytes)
+    + (v > 3.5 * 1024 * 1024 ? ' · 偏高，建议导出备份' : '');
   const pc = document.getElementById('usagePct');
   if (pc) {
     pc.textContent = Math.round(v / (5 * 1024 * 1024) * 100) + '%';
@@ -10973,17 +11240,39 @@ function showDupGroup(groups, idx) {
   });
 }
 
-bootCards();
-autoSnapshot();
-initSnapMigrate();
-applyTheme();
-render();
-setTimeout(checkRemind, 3000);
-setTimeout(pullOnBoot, 2500);
+globalThis.__startPromise = (async function () {
+  try { await loadCardsAsync(); } catch (e) {}
+  bootCards();
+  autoSnapshot();
+  initSnapMigrate();
+  setTimeout(function () { try { recompressSnaps(); } catch (e) {} }, 4000);
+  applyTheme();
+  render();
+  setTimeout(checkRemind, 3000);
+  setTimeout(pullOnBoot, 2500);
+  /* 启动后体检：localStorage 偏高就先清理一轮，不等写到失败 */
+  setTimeout(function () {
+    try {
+      if (lsBytes() > 3.6 * 1024 * 1024) {
+        const freed = emergencyClean();
+        if (freed > 0) {
+          try { saveDB(); } catch (e) {}
+          toast('已清理 ' + fmtBytes(freed) + ' 本地缓存');
+        }
+      }
+    } catch (e) {}
+  }, 2600);
+})();
+/* 卡片写在 IndexedDB 里是异步的，切后台时补一次提交，避免最后几笔丢失 */
+function flushCards() {
+  try { if (__cardsDirty) saveCards(); } catch (e) {}
+}
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { autoSnapshot(); checkRemind(); }
+  if (document.hidden) { try { flushCards(); autoSnapshot(); } catch (e) {} }
+  else { autoSnapshot(); checkRemind(); }
 });
-window.addEventListener('beforeunload', () => { try { autoSnapshot(); } catch (e) {} });
+window.addEventListener('pagehide', () => { try { flushCards(); } catch (e) {} });
+window.addEventListener('beforeunload', () => { try { flushCards(); autoSnapshot(); } catch (e) {} });
 
 /* Service Worker：让它可以真正离线打开 */
 if ('serviceWorker' in navigator) {
