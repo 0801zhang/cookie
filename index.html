@@ -6622,7 +6622,7 @@ function modsDefault() {
     ledger: [],
     drafts: {},
     sprint: { on: false, end: '', daily: 60, sound: false },
-    layout: { global: 'side', perCard: {} },
+    layout: { global: 'flip', perCard: {}, v2: 0 },
     exams: [],
     examCur: 0,
     resume: null,
@@ -7155,6 +7155,7 @@ function openDraft() {
 
 /* ---------- 卡片排版预设 ---------- */
 const LAYOUTS = [
+  { id: 'flip', name: '翻面看答案', desc: '一次一张，点一下翻面' },
   { id: 'side', name: '左题干右答案', desc: '宽屏左右分栏' },
   { id: 'mask', name: '遮挡式', desc: '翻面后答案先遮住，点一下才显' },
   { id: 'formula', name: '公式上下对照', desc: '答案放大居中，上下对照' }
@@ -7162,12 +7163,22 @@ const LAYOUTS = [
 
 function layoutOf(cardId) {
   const m = M();
-  return (m.layout.perCard && m.layout.perCard[cardId]) || m.layout.global || 'side';
+  return (m.layout.perCard && m.layout.perCard[cardId]) || m.layout.global || 'flip';
 }
 
 function applyLayout() {
+  /* 一次性迁移：以前默认是左右分栏，统一改回翻面，之后用户仍可在设置里选回 */
+  try {
+    const m = M();
+    if (!m.layout) m.layout = { global: 'flip', perCard: {}, v2: 0 };
+    if (!m.layout.v2) {
+      if (!m.layout.global || m.layout.global === 'side') m.layout.global = 'flip';
+      m.layout.v2 = 1;
+      try { saveDB(); } catch (e) {}
+    }
+  } catch (e) {}
   const c = ST && ST.queue ? ST.queue[ST.i] : null;
-  const lay = c ? layoutOf(c.id) : (M().layout.global || 'side');
+  const lay = c ? layoutOf(c.id) : (M().layout.global || 'flip');
   document.body.setAttribute('data-layout', lay);
   const stage = document.querySelector('.stage');
   if (!stage) return;
@@ -8365,8 +8376,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.13.5';
-const BUILD_STAMP = '11-09 06:35';
+const APP_VERSION = '1.13.7';
+const BUILD_STAMP = '11-09 07:05';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -9033,8 +9044,8 @@ function openCardMenu(c) {
     #app{max-width:1060px; margin-left:auto; margin-right:auto;}
     .tabbar .in{max-width:1060px; margin:0 auto;}
     .study{max-width:820px; margin:0 auto;}
-    /* 大屏：保持翻面模式，一次只显示一面，只把卡片限宽居中 */
-    .face{max-width:760px; left:0; right:0; margin:0 auto;}
+    /* 大屏：保持翻面模式，一次只显示一面；限宽作用在容器上，不动绝对定位的卡片 */
+    .stage{max-width:760px; width:100%; margin:0 auto;}
     .list{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; align-items:start;}
     /* 设置页：按块分栏，避免分组被拆到两列造成错位 */
     .setcols{max-width:720px; margin:0 auto;}
