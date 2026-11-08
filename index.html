@@ -5777,6 +5777,12 @@ async function runDiag() {
   lines.push('同步方式：' + (g ? 'Gitee' : b ? 'Supabase' : gh ? 'GitHub' : '未配置'));
   lines.push('本机上次上传：' + (DB.settings.lastPush ? new Date(DB.settings.lastPush).toLocaleString('zh-CN') : '还没传过'));
   lines.push('本机卡片数：' + ((DB.cards || []).length));
+  try {
+    const ss = store.stats || {};
+    lines.push('本机统计：今日 ' + ((ss.days && ss.days[dateKey()]) || 0) + ' · 累计 ' + (ss.total || 0)
+      + ' · 答对 ' + (ss.right || 0) + ' · 连续 ' + (ss.streakDays || 0));
+    lines.push('本机答题记录：' + Object.keys(store.cards || {}).length + ' 条');
+  } catch (e) {}
   lines.push('');
 
   if (g) {
@@ -5808,6 +5814,23 @@ async function runDiag() {
             lines.push('现有描述：' + list.slice(0, 6).map(x => x.description || '(无描述)').join(' ｜ '));
           }
         }
+      }
+      /* 顺带读一次云端，对比统计 */
+      try {
+        const d = await cloudPull(false);
+        if (d && d.payload && d.payload.store) {
+          const cs = d.payload.store.stats || {};
+          lines.push('');
+          lines.push('云端统计：今日 ' + ((cs.days && cs.days[dateKey()]) || 0) + ' · 累计 ' + (cs.total || 0)
+            + ' · 答对 ' + (cs.right || 0) + ' · 连续 ' + (cs.streakDays || 0));
+          lines.push('云端答题记录：' + Object.keys(d.payload.store.cards || {}).length + ' 条');
+          lines.push('云端卡片数：' + ((d.payload.cards || []).length));
+        } else if (d) {
+          lines.push('');
+          lines.push('⚠️ 云端没有 store 字段，是旧版本传的，需重新上传');
+        }
+      } catch (e) {
+        lines.push('云端读取失败：' + ((e && e.message) || ''));
       }
     } catch (e) {
       lines.push('请求失败：' + (e && e.name) + ' · ' + (e && e.message));
@@ -7739,8 +7762,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.6.7';
-const BUILD_STAMP = '2026-11-09 16:35';
+const APP_VERSION = '1.6.8';
+const BUILD_STAMP = '2026-11-09 17:05';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8419,14 +8442,17 @@ function openCardMenu(c) {
     .setcols .setrow{display:flex; width:100%;}
   }
   @media (min-width:800px){
-    .setcols{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px;
-      max-width:1000px; margin:0 auto; align-items:start;}
-    .setcols > *:not(.setblock){grid-column:1 / -1;}
-    .setblock{background:var(--card); border:1px solid var(--line); border-radius:18px;
-      padding:2px 14px 10px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
-    .setblock .sec-label{margin-top:10px; padding-left:0;}
+    /* 瀑布流：两张卡片不等高也能自然错落，不会留大片空白 */
+    .setcols{column-count:2; column-gap:16px; max-width:1020px; margin:0 auto;}
+    .setcols > *:not(.setblock){column-span:all; -webkit-column-span:all;}
+    .setblock{break-inside:avoid; -webkit-column-break-inside:avoid;
+      display:inline-block; width:100%; vertical-align:top;
+      background:var(--card); border:1px solid var(--line); border-radius:18px;
+      padding:2px 15px 12px; margin:0 0 16px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
+    .setblock .sec-label{margin-top:12px; padding-left:0; font-weight:600;}
     .setblock .list{background:transparent; border:none; border-radius:0;}
     .setblock .setrow{padding-left:0; padding-right:0;}
+    .setblock:last-child{margin-bottom:0;}
     .list .setrow, .list .crow{min-width:0;}
     .setrow{padding-left:0; padding-right:0;}
     #app > .list > .setrow:only-child{grid-column:1 / -1;}
