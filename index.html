@@ -5687,6 +5687,18 @@ async function gePush(silent) {
   const files = { 'binggan.json': { content: JSON.stringify(packed) } };
   try {
     const hit = await geFind(g.token, g.sync);
+    /* 云端比本机新，说明另一台设备刚传过，别覆盖它 */
+    if (hit && hit.updated_at) {
+      const cloudAt = new Date(String(hit.updated_at).replace(/-/g, '/')).getTime();
+      const localAt = DB.settings.lastPush || 0;
+      if (cloudAt > localAt + 30000) {
+        if (!silent) {
+          const t = new Date(cloudAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+          toast('云端比本机新（' + t + '），已取消上传，请先「从云端恢复」');
+        }
+        return false;
+      }
+    }
     let url, method, body;
     if (hit) {
       url = GE + '/gists/' + hit.id + '?access_token=' + encodeURIComponent(g.token);
@@ -5858,6 +5870,33 @@ async function pullOnBoot() {
 let __cloudNewer = null;
 
 function showSyncHint(cloudAt) {
+  try {
+    const t = new Date(cloudAt).toLocaleString('zh-CN');
+    confirmSheet('云端有更新的数据', '云端数据更新于 ' + t + '，比这台设备新。是否用云端数据覆盖本机？', '覆盖并同步', function () {
+      const d = __cloudNewer;
+      if (!d) { cloudRestore(); return; }
+      const nd = normalizeBackup(d.payload) || { cards: d.payload.cards, sched: d.payload.sched || {}, settings: d.payload.settings || {} };
+      DB = Object.assign(defDB(), {
+        cards: nd.cards, decks: nd.decks || defDB().decks,
+        sched: nd.sched, logs: nd.logs, sessions: nd.sessions, stats: nd.stats
+      });
+      DB.settings = Object.assign(defDB().settings, nd.settings);
+      DB.mods = Object.assign(modsDefault(), nd.mods || {});
+      if (d.payload && d.payload.store && d.payload.store.cards) {
+        store = d.payload.store;
+        try { save(); } catch (e) {}
+      }
+      DB.settings.lastPush = Date.now();
+      __cardsDirty = true;
+      CB = DB;
+      bootCards();
+      saveDB(); applyTheme(); toast('已同步'); setTimeout(function () { try { render(); } catch (e) {} }, 100);
+    });
+  } catch (e) {}
+  return;
+}
+
+function showSyncHintOld(cloudAt) {
   let el = document.getElementById('syncHint');
   if (el && el.parentNode) el.parentNode.removeChild(el);
   el = document.createElement('div');
@@ -7700,8 +7739,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.6.5';
-const BUILD_STAMP = '2026-11-09 15:30';
+const APP_VERSION = '1.6.7';
+const BUILD_STAMP = '2026-11-09 16:35';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -8379,12 +8418,15 @@ function openCardMenu(c) {
     .setcols .list{display:block;}
     .setcols .setrow{display:flex; width:100%;}
   }
-  @media (min-width:900px){
-    .setcols{max-width:1000px; column-count:2; column-gap:26px;}
-    .setblock{break-inside:avoid; -webkit-column-break-inside:avoid; display:block;}
-    .setblock .sec-label{margin-top:0;}
-    .setcols > div:first-child{break-after:avoid; -webkit-column-break-after:avoid;}
-    .setcols > div:last-child{break-before:avoid; -webkit-column-break-before:avoid;}
+  @media (min-width:800px){
+    .setcols{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px;
+      max-width:1000px; margin:0 auto; align-items:start;}
+    .setcols > *:not(.setblock){grid-column:1 / -1;}
+    .setblock{background:var(--card); border:1px solid var(--line); border-radius:18px;
+      padding:2px 14px 10px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
+    .setblock .sec-label{margin-top:10px; padding-left:0;}
+    .setblock .list{background:transparent; border:none; border-radius:0;}
+    .setblock .setrow{padding-left:0; padding-right:0;}
     .list .setrow, .list .crow{min-width:0;}
     .setrow{padding-left:0; padding-right:0;}
     #app > .list > .setrow:only-child{grid-column:1 / -1;}
