@@ -257,7 +257,7 @@ input{font-family:inherit;}
   box-shadow:0 8px 28px rgba(255,111,165,.10);
   opacity:0; visibility:hidden;
   transform:translateY(16px) scale(.982);
-  transition:opacity .24s ease, transform .34s cubic-bezier(.2,.9,.3,1);
+  transition:opacity .13s ease, transform .19s cubic-bezier(.2,.9,.3,1);
 }
 .face.front{opacity:1; visibility:visible; transform:none; position:relative;}
 .flip.on .face.front{opacity:0; visibility:hidden;
@@ -344,6 +344,7 @@ input{font-family:inherit;}
 .frac{display:inline-flex; flex-direction:column; align-items:center; vertical-align:middle; text-align:center; margin:0 3px; font-size:.86em; line-height:1.3;}
 .frac b{display:block; border-bottom:1.3px solid currentColor; padding:0 5px 1px; font-weight:600; line-height:1.25;}
 .frac i{display:block; font-style:normal; padding:1px 5px 0; line-height:1.25;}
+.frac-note{font-size:.82em; color:var(--dim); margin-left:6px;}
 sup{font-size:.7em; vertical-align:super; line-height:0;}
 sub{font-size:.7em; vertical-align:sub; line-height:0;}
 
@@ -3448,15 +3449,78 @@ function tex(str) {
   s = s.replace(/\$\$([\s\S]+?)\$\$/g, '$1').replace(/\$([^$\n]+?)\$/g, '$1');
   s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '<span class="frac"><b>$1</b><i>$2</i></span>');
   s = s.replace(/\\sqrt\{([^{}]*)\}/g, '√<span style="border-top:1px solid currentColor;padding:0 2px">$1</span>');
-  s = s.replace(/\^\{([^{}]*)\}/g, '<sup>$1</sup>').replace(/\^(-?\w)/g, '<sup>$1</sup>');
+  s = s.replace(/\^\{([^{}]*)\}/g, '<sup>$1</sup>')
+    .replace(/\^\(([^()]*)\)/g, '<sup>$1</sup>')
+    .replace(/\^(-?\w)/g, '<sup>$1</sup>');
   s = s.replace(/_\{([^{}]*)\}/g, '<sub>$1</sub>').replace(/_(\w)/g, '<sub>$1</sub>');
   Object.keys(TEX_SYM).forEach(k => { s = s.split(k).join(TEX_SYM[k]); });
   s = s.replace(/\\[a-zA-Z]+/g, '');
   s = s.replace(/&lt;(\/?)(b|i|em|br|strong)&gt;/g, '<$1$2>');
-  // 普通斜杠分数 → 标准上下分式（只认 1~3 位数字，避免误伤年份/路径）
-  s = s.replace(/(^|[^\w>])(\d{1,3}(?:\.\d+)?)\s*\/\s*(\d{1,3}(?:\.\d+)?)(?![\w<.]|\d)/g,
-    (m, pre, a, b) => pre + '<span class="frac"><b>' + a + '</b><i>' + b + '</i></span>');
-  return s;
+  // 所有 a/b 形式 → 标准上下分式
+  return texSlash(s);
+}
+
+/* 括号是否未闭合（用于判断外层括号属于整个分式、还是分子自己的） */
+function openUnbalanced(x) {
+  const o = (String(x).match(/\(/g) || []).length;
+  const c = (String(x).match(/\)/g) || []).length;
+  return o > c;
+}
+function closeUnbalanced(x) {
+  const o = (String(x).match(/\(/g) || []).length;
+  const c = (String(x).match(/\)/g) || []).length;
+  return c > o;
+}
+
+/* 把文本里所有 a/b 形式转成上下分式（日期与网址除外） */
+function texSlash(html) {
+  if (!html || html.indexOf('/') < 0) return html;
+  let out = html;
+  const keep = [];
+  const stash = function (v) { keep.push(v); return '\u0001' + (keep.length - 1) + '\u0002'; };
+
+  out = out.replace(/[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s<>"']*/g, stash);   /* 网址 */
+  out = out.replace(/\d{4}\/\d{1,2}\/\d{1,2}/g, stash);                 /* 日期 2025/10/01 */
+  out = out.replace(/\d{1,2}\/\d{1,2}\/(\d{2}|\d{4})/g, stash);         /* 日期 10/01/25 */
+
+  const mathCtx = /[=×÷≈≠≤≥^−+]|[0-9]\s*[%％]/.test(out);
+  out = out.replace(/(\([^()]*\)|[^\s<>"'\/=+\-−×÷∗()（）]+)\s*\/\s*(\([^()]*\)|[^\s<>"'\/=+\-−×÷∗()（）]+)/g, function (m, a, b) {
+    if (!a || !b) return m;
+    /* 没有数学上下文时，只转纯数字（12/25），文字里的 和/或、A/B 保持原样 */
+    if (!mathCtx && !(/^\d+(?:\.\d+)?$/.test(a) && /^\d+(?:\.\d+)?$/.test(b))) return m;
+    /* (末期/初期) 这种：括号在外，不要塞进分子分母 */
+    if (openUnbalanced(a) && closeUnbalanced(b)) {
+      return '(<span class="frac"><b>' + a.slice(1) + '</b><i>' + b.slice(0, -1) + '</i></span>)';
+    }
+    return '<span class="frac"><b>' + a + '</b><i>' + b + '</i></span>';
+  });
+
+  out = out.replace(/\u0001(\d+)\u0002/g, function (m, i) { return keep[+i] || ''; });
+  return out;
+}
+
+/* 把 "a / (b)" 这类公式排成上下分式（只认结构明确的，避免误伤普通文本） */
+function fracFull(str) {
+  const raw = String(str == null ? '' : str);
+  if (!raw || raw.length > 100) return null;
+  /* 只处理有数学意义的：含数字或运算符，纯文字里的 a/b 不动 */
+  if (!/[0-9=×÷≈^−+%％]/.test(raw)) return null;
+  const eq = raw.indexOf('=');
+  const head = eq >= 0 ? raw.slice(0, eq + 1) : '';
+  const body = eq >= 0 ? raw.slice(eq + 1) : raw;
+  const m = body.match(/^\s*((?:[^/()]|\([^()]*\))+?)\s*\/\s*(\([^()]*\)|\d+(?:\.\d+)?)\s*(.*)$/);
+  if (!m) return null;
+  let num = m[1].trim();
+  let den = m[2].trim();
+  const rest = (m[3] || '').trim();
+  if (!num || !den) return null;
+  let pre = '', post = '';
+  if (openUnbalanced(num) && closeUnbalanced(den)) { num = num.slice(1); den = den.slice(0, -1); pre = '('; post = ')'; }
+  if (den.charAt(0) === '(' && den.charAt(den.length - 1) === ')') den = den.slice(1, -1);
+  if (!num || !den) return null;
+  return escHTML(head) + (head ? '<br>' : '') + pre
+    + '<span class="frac"><b>' + escHTML(num) + '</b><i>' + escHTML(den) + '</i></span>' + post
+    + (rest ? '<span class="frac-note">' + escHTML(rest) + '</span>' : '');
 }
 
 /* 提示条 */
@@ -4013,11 +4077,11 @@ function viewHome() {
 
 /* ---------------- 答题页 ---------------- */
 function viewQuiz() {
-  const c = S.cur;
+  const c = applyOv(S.cur);
   if (!c) return '';
   const pct = Math.round(S.i / S.queue.length * 100);
   const isNum = c.type === 'num';
-  const qText = c.headline || c.q || c.front || '';
+  const qText = fracFull(c.headline || c.q || c.front || '') || tex(c.headline || c.q || c.front || '');
   const cls = (c.q && c.q.length > 24) || (c.headline && c.headline.length > 14) ? 'small' : '';
 
   let ansHTML = '';
@@ -4040,7 +4104,7 @@ function viewQuiz() {
         else if (idx === S.picked) { cls += ' wrong'; mk = '<b class="mk">✕</b>'; }
       }
       return `<button class="${cls}" data-opt="${idx}" ${S.answered ? 'disabled' : ''}>
-        <span class="key">${'ABCD'[idx]}</span><span class="o-tx">${o}</span>${mk}
+        <span class="key">${'ABCD'[idx]}</span><span class="o-tx">${fracFull(o) || tex(o)}</span>${mk}
       </button>`;
     }).join('') + `</div>`;
   }
@@ -4053,7 +4117,7 @@ function viewQuiz() {
         <div class="fb-head">${ok ? '✓ 对了' : '✕ 偏了'}</div>
         ${c.type === 'num' && !ok && S.userAns ? `<div class="fb-ans" style="color:var(--sub)">你填的：${S.userAns}</div>` : ''}
         <div class="fb-ans">正确答案：<b>${c.type === 'num' ? c.ans + (c.unit || '') : 'ABCD'[c.ans] + '. ' + c.options[c.ans]}</b></div>
-        <div class="fb-tip">${c.tip}</div>
+        <div class="fb-tip">${explainHTML(c.tip)}</div>
         ${idiomRelHTML(c)}
       </div>
       <button class="btn-main green" id="nextBtn">继续 →</button>
@@ -4063,12 +4127,25 @@ function viewQuiz() {
   return `
   <div class="qwrap">
     <div class="progress-bar"><i style="width:${pct}%"></i></div>
+    ${(function () {
+      const sec = suggestSec(c);
+      if (!sec || sec <= 0 || S.answered) return '';
+      return '<div class="sug-timer" id="sugTimer" style="margin:10px 0 4px;">'
+        + '<div class="tm-bar-wrap"><em id="sgFill" class="ok" style="width:100%"></em></div>'
+        + '<span class="tm-num ok" id="sgNum">' + sec + 's</span></div>';
+    })()}
     <div class="qmeta">
       <span class="tag">${c.tag}</span>
-      <span>${S.streak >= 3 ? `<span class="streak">🔥 ${S.streak}</span>` : `${S.session.right}/${S.session.total}`}</span>
+      <span class="qmeta-r">
+        <span>${S.streak >= 3 ? `<span class="streak">🔥 ${S.streak}</span>` : `${S.session.right}/${S.session.total}`}</span>
+        <button class="sb-btn${isFav(c.id) ? ' on' : ''}" id="qzFav" title="收藏">${isFav(c.id) ? '★' : '☆'}</button>
+        <button class="sb-btn${isOverridden(c.id) ? ' on' : ''}" id="qzEdit" title="改写">✐</button>
+        <button class="sb-btn${noteOf(c.id) ? ' on' : ''}" id="qzNote" title="笔记">✎</button>
+      </span>
     </div>
     <div class="qcard">
       <div class="qtext ${cls}">${qText}</div>
+      ${noteOf(c.id) ? '<div class="my-note"><b>我的笔记</b>' + escHTML(noteOf(c.id)) + '</div>' : ''}
       <div class="answer-area">${ansHTML}${fbHTML}</div>
     </div>
   </div>`;
@@ -4123,7 +4200,7 @@ function viewWrong() {
   });
   if (!ids.length) return `<div class="empty">还没有错题。<br>选错的题会自动收进来，一直留到你连续答对三次。</div>`;
   const items = ids.map(id => {
-    const card = findCard(id);
+    const card = applyOv(findCard(id));
     if (!card) return '';
     const ansText = Array.isArray(card.options) ? card.options[card.ans]
       : (card.ans != null ? card.ans + (card.unit || '') : (card.back || ''));
@@ -5221,7 +5298,7 @@ function viewCards() {
 }
 
 function viewStudy() {
-  const c = ST.queue[ST.i];
+  const c = applyOv(ST.queue[ST.i]);
   if (!c) return '';
   const pct = Math.round(ST.i / ST.queue.length * 100);
   const showTimer = CB.settings.timer && ST.mode !== 'exam';
@@ -5234,6 +5311,7 @@ function viewStudy() {
       <span style="font-size:9px; color:var(--dim); opacity:.6; margin-left:-4px;">${typeof APP_VERSION !== 'undefined' ? APP_VERSION : ''}</span>
       <button class="sb-btn ${isFav(c.id) ? 'on' : ''}" id="sbFav" title="收藏">${isFav(c.id) ? '★' : '☆'}</button>
       <button class="sb-btn" id="sbNote" title="笔记">✎</button>
+      <button class="sb-btn${isOverridden(c.id) ? ' on' : ''}" id="sbEdit" title="改写">✐</button>
       <button id="quitStudy" style="width:26px;height:26px;border-radius:8px;background:var(--card);border:1px solid var(--line);color:var(--sub);font-size:15px;line-height:1;flex-shrink:0;">×</button>
     </div>
     ${showTimer ? '<div class="timer"><i style="width:100%"></i></div>' : ''}
@@ -5242,7 +5320,7 @@ function viewStudy() {
         <div class="flip-inner">
           <div class="face front">
             <span class="ftag">${c.deck}${cloze ? ' · 挖空' : ''}</span>
-            <div class="fq">${tex(c.front)}</div>
+            <div class="fq">${fracFull(c.front) || tex(c.front)}</div>
             ${Array.isArray(c.options) && c.options.length ? `<div class="opts">${c.options.map((o, i) => {
               let cls = 'opt', mk = '';
               if (ST.pickAnswered) {
@@ -5257,11 +5335,11 @@ function viewStudy() {
             <div class="fhint">${ST.timeout ? '⏱ 超时，记为完全不会' : '点击卡片，或点下方按钮翻面'}</div>
           </div>
           <div class="face back">
-            <div class="bk-q">${tex(c.front)}</div>
+            <div class="bk-q">${fracFull(c.front) || tex(c.front)}</div>
             ${cloze && ST.clozeAns ? `<div class="bk-mine${ST.clozeOk === true ? ' ok' : (ST.clozeOk === false ? ' no' : '')}">你写的：${escHTML(ST.clozeAns)}${ST.clozeOk === true ? '<b class="mk ok">✓</b>' : (ST.clozeOk === false ? '<b class="mk no">✕</b>' : '')}</div>` : ''}
             <div class="bk-ans">
               <span class="ftag">${c.deck} · 答案</span>
-              <div class="fa">${tex(c.back)}</div>
+              <div class="fa">${fracFull(c.back) || tex(c.back)}</div>
             </div>
             ${c.note ? `<div class="bk-exp"><div class="exp-hd">解 析</div>${explainHTML(c.note)}</div>` : ''}
             ${c.trap ? `<div class="ftrap">💡 易混提醒：${tex(c.trap)}</div>` : ''}
@@ -5520,7 +5598,7 @@ function handlePickByIdx(idx) {
     render();
     setTimeout(function () {
       try { if (typeof ST !== 'undefined' && ST && !ST.flipped) flipCard(); } catch (e) {}
-    }, 900);
+    }, ok ? 320 : 600);
   } catch (e) {}
 }
 
@@ -5930,6 +6008,41 @@ function findCard(id) {
 /* ---------------- 事件绑定 ---------------- */
 function bind() {
   // 首页
+  /* 各模块的收藏 / 改写按钮 */
+  const qf = document.querySelector('#qzFav');
+  if (qf) qf.onclick = (ev) => {
+    ev.stopPropagation();
+    const id = S.cur && S.cur.id;
+    if (id) { toggleFav(id); render(); }
+  };
+  const qe = document.querySelector('#qzEdit');
+  if (qe) qe.onclick = (ev) => {
+    ev.stopPropagation();
+    const id = S.cur && S.cur.id;
+    if (id) openCardEditor(id);
+  };
+  const qn = document.querySelector('#qzNote');
+  if (qn) qn.onclick = (ev) => {
+    ev.stopPropagation();
+    const id = S.cur && S.cur.id;
+    if (id) openNoteSheet(id);
+  };
+  const bNote = document.querySelector('#brNote');
+  if (bNote) bNote.onclick = () => {
+    const c = BROWSE.list && BROWSE.list[BROWSE.i];
+    if (c) openNoteSheet(c.id);
+  };
+  const bf = document.querySelector('#brFav');
+  if (bf) bf.onclick = () => {
+    const c = BROWSE.list && BROWSE.list[BROWSE.i];
+    if (c) { toggleFav(c.id); render(); }
+  };
+  const be = document.querySelector('#brEdit');
+  if (be) be.onclick = () => {
+    const c = BROWSE.list && BROWSE.list[BROWSE.i];
+    if (c) openCardEditor(c.id);
+  };
+
   const rc = document.querySelector('#recoverBtn');
   if (rc) rc.onclick = function () { try { recoverLogsFromSnapshots(); } catch (e) { toast('读取失败'); } };
   const dg = document.querySelector('#diagBtn');
@@ -6007,6 +6120,11 @@ function bind() {
     startCards('收藏', 'normal', list);
   };
 
+  if ($('#sbEdit')) $('#sbEdit').onclick = (ev) => {
+    ev.stopPropagation();
+    const cur = ST && ST.queue ? ST.queue[ST.i] : null;
+    if (cur) openCardEditor(cur.id);
+  };
   if ($('#sbFav')) $('#sbFav').onclick = (ev) => {
     if (ev && ev.stopPropagation) ev.stopPropagation();
     const cur = ST && ST.queue ? ST.queue[ST.i] : null;
@@ -7494,28 +7612,38 @@ const SFX = (function () {
     s.buffer = b; s.connect(c.destination); s.start(0);
     unlocked = true;
   }
+  /* 音频上下文被系统挂起时，等 resume 完成再调度，否则声音会丢 */
+  function withCtx(fn) {
+    const c = ensure();
+    if (!c) return;
+    const run = function () { try { fn(c); } catch (e) {} };
+    if (c.state === 'running') { run(); return; }
+    try { c.resume().then(run).catch(run); } catch (e) { run(); }
+  }
   function tone(freq, dur, type, vol, delay, slideTo) {
-    const c = ensure(); if (!c) return;
-    const o = c.createOscillator(), g = c.createGain();
-    o.type = type || 'sine';
-    const t0 = c.currentTime + (delay || 0);
-    o.frequency.setValueAtTime(freq, t0);
-    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + 0.015);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.connect(g); g.connect(c.destination);
-    o.start(t0); o.stop(t0 + dur + 0.03);
+    withCtx(function (c) {
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = type || 'sine';
+      const t0 = c.currentTime + (delay || 0);
+      o.frequency.setValueAtTime(freq, t0);
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g); g.connect(c.destination);
+      o.start(t0); o.stop(t0 + dur + 0.03);
+    });
   }
   function noise(dur, vol) {
-    const c = ensure(); if (!c) return;
-    const len = Math.floor(c.sampleRate * dur);
-    const buf = c.createBuffer(1, len, c.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-    const src = c.createBufferSource(); src.buffer = buf;
-    const g = c.createGain(); g.gain.value = vol;
-    src.connect(g); g.connect(c.destination); src.start();
+    withCtx(function (c) {
+      const len = Math.floor(c.sampleRate * dur);
+      const buf = c.createBuffer(1, len, c.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+      const src = c.createBufferSource(); src.buffer = buf;
+      const g = c.createGain(); g.gain.value = vol;
+      src.connect(g); g.connect(c.destination); src.start();
+    });
   }
   const BANK = {
     ding: v => { tone(880, 0.16, 'sine', v, 0); tone(1320, 0.22, 'sine', v * 0.6, 0.06); },
@@ -7543,13 +7671,27 @@ const SFX = (function () {
     const f = BANK[type];
     if (f) f(vol == null ? 0.7 : vol);
   }
+  const FALLBACK = { correct: 'ding', wrong: 'buzz', timeout: 'clock', done: 'fanfare', sprint: 'spark' };
   function scene(name) {
     const m = M();
-    const cfg = m.sound[name];
-    if (!cfg) return;
-    play(cfg.type, cfg.vol);
+    if (m.sound && m.sound.mute) return;
+    const cfg = (m.sound && m.sound[name]) || null;
+    if (cfg && cfg.type) { play(cfg.type, cfg.vol); return; }
+    if (FALLBACK[name]) play(FALLBACK[name], 0.7);
   }
   return { play, scene, unlock, ensure };
+})();
+
+/* 音频解锁：移动端必须由用户手势触发，且切回前台要恢复 */
+(function unlockAudio() {
+  const tryUnlock = function () { try { SFX.unlock(); } catch (e) {} };
+  ['pointerdown', 'touchstart', 'click', 'keydown'].forEach(function (ev) {
+    document.addEventListener(ev, tryUnlock, { passive: true });
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) return;
+    try { SFX.ensure(); } catch (e) {}
+  });
 })();
 
 /* 最外层兜底：捕获阶段拦截选项与错因点击，不受绑定丢失或遮挡影响 */
@@ -9205,8 +9347,8 @@ function fmtBytes(n) {
    批次二：登录自检 / 版本与更新提示
    ============================================================ */
 
-const APP_VERSION = '1.27.2';
-const BUILD_STAMP = '11-09 16:56';
+const APP_VERSION = '1.34.0';
+const BUILD_STAMP = '11-10 01:05';
 
 /* ---------- 登录自检 ---------- */
 async function probeCloud() {
@@ -9439,11 +9581,8 @@ function timerCfg(deck) {
 const SUGGEST_MEMORY = ['常识判断', '政治理论', '言语成语', '判断推理', '百化分', '百分比转换'];
 
 function suggestSec(c) {
-  if (!c) return 15;
-  const deck = c.deck || '';
-  if (SUGGEST_MEMORY.indexOf(deck) >= 0) return 15;
-  if (/(平方|立方|开方|单位)/.test(deck)) return 20;
-  return 40;
+  /* 统一 15 秒 */
+  return 15;
 }
 
 /* ---------- 单题建议时长倒计时（横向进度条，与全局计时器互不干扰） ---------- */
@@ -9483,8 +9622,13 @@ function sgPaint(left) {
 
 function sgTick() {
   if (!document.getElementById('sugTimer')) { sgStop(); return; }
-  if (!ST || ST.flipped || ST.graded || ST.timeout) { sgStop(); return; }
   if (SG.pausedAt) return;                     /* 后台暂停中 */
+  const inQuiz = (typeof S !== 'undefined' && S && S.view === 'quiz');
+  if (inQuiz) {
+    if (!S.cur || S.answered) { sgStop(); return; }
+  } else {
+    if (!ST || ST.flipped || ST.graded || ST.timeout) { sgStop(); return; }
+  }
   const left = Math.max(0, SG.deadline - Date.now());
   sgPaint(left);
   if (left <= 0) { sgStop(); sgTimeUp(); }
@@ -9502,6 +9646,14 @@ function sgResume() {
 /* 超时：自动判错，正确选项标绿，弹出提示，不等用户点 */
 function sgTimeUp() {
   try {
+    if (typeof S !== 'undefined' && S && S.view === 'quiz') {
+      if (!S.cur || S.answered) return;
+      S.picked = null;
+      try { SFX.scene('timeout'); } catch (e) {}
+      judge(false);
+      toast('超时了，此题按错记，正确答案已标绿');
+      return;
+    }
     if (!ST || ST.flipped || ST.graded || ST.timeout) return;
     ST.timeout = true;
     ST.pickAnswered = true;
@@ -9618,7 +9770,13 @@ function favCount() {
 /* 解析分段：释义 / 语境 / 色彩 / 考频 之类，左标签右内容对齐 */
 function explainHTML(raw) {
   if (!raw) return '';
-  const text = String(raw);
+  let text = String(raw);
+  /* 同一行里挤着的字段也切开：释义：… 语境：… 色彩：… 考频9次 */
+  text = text.replace(/\s*[|｜]\s*/g, '|');
+  text = text.replace(/\s*(释义|语境|色彩|考频|辨析|用法|近义|反义|例句|易错|出处)\s*[:：]/g, '|$1：');
+  text = text.replace(/[；;]\s*(?=(释义|语境|色彩|考频|辨析|用法|近义|反义|例句|易错|出处))/g, '|');
+  text = text.replace(/\s+(考频)(?=\s*\d)/g, '|$1');
+  text = text.replace(/^\|+/, '');
   const parts = text.split(/[|｜\n]/).map(function (x) { return x.trim(); }).filter(Boolean);
   const RE = /^(释义|语境|色彩|考频|辨析|用法|近义|反义|例句|易错|出处)\s*[:：]?\s*([\s\S]*)$/;
   const rows = [];
@@ -9628,11 +9786,11 @@ function explainHTML(raw) {
     else rows.push({ k: '', v: p });
   });
   const hasKey = rows.some(function (r) { return r.k; });
-  if (!hasKey) return '<div class="fnote">' + tex(text) + '</div>';
+  if (!hasKey) return '<div class="fnote">' + (fracFull(text) || tex(text)) + '</div>';
   return '<div class="exp-rows">' + rows.map(function (r) {
     return '<div class="exp-row">'
       + (r.k ? '<span class="exp-k">' + r.k + '</span>' : '')
-      + '<span class="exp-v' + (r.k ? '' : ' exp-v-full') + '">' + tex(r.v) + '</span>'
+      + '<span class="exp-v' + (r.k ? '' : ' exp-v-full') + '">' + (fracFull(r.v) || tex(r.v)) + '</span>'
       + '</div>';
   }).join('') + '</div>';
 }
@@ -9741,6 +9899,16 @@ function openTimerSheet() {
 /* ---------- 复习页注入 ---------- */
 const TMUI = {
   after(view) {
+    /* 各题型模块：单题倒计时 */
+    if (view === 'quiz') {
+      try {
+        const c = S.cur;
+        const sec = c ? suggestSec(c) : 0;
+        if (sec > 0 && !S.answered) sgStart(sec, c.id);
+        else sgStop();
+      } catch (e) {}
+      return;
+    }
     if (view !== 'study' || !ST) return;
     const bar = document.querySelector('.study-bar');
     if (!bar) return;
@@ -10292,7 +10460,7 @@ let BROWSE = { group: '全部', list: [], i: 0, flipped: false };
 
 function viewBrowse() {
   if (!BROWSE.list.length) BROWSE.list = memCards(BROWSE.group);
-  const c = BROWSE.list[BROWSE.i];
+  const c = applyOv(BROWSE.list[BROWSE.i]);
   const groups = ['全部'].concat(Object.keys(MEM_GROUPS));
   const tabs = `<div class="br-tabs">
     ${groups.map(g => `<button class="chip br-tab ${BROWSE.group === g ? 'on' : ''}" data-bgroup="${escAttr(g)}">${escHTML(g)}</button>`).join('')}
@@ -10322,19 +10490,26 @@ function viewBrowse() {
     if (eq) {
       return `<div class="br-card flat eq" id="brCard">
         <span class="ftag">${escHTML(c.deck)}</span>
-        <div class="eq-big">${tex(eq)}</div>
+        <div class="eq-big">${fracFull(eq) || tex(eq)}</div>
         ${c.note ? `<div class="fnote">${tex(c.note)}</div>` : ''}
         ${c.trap ? `<div class="ftrap">💡 ${tex(c.trap)}</div>` : ''}
+        ${noteOf(c.id) ? `<div class="my-note"><b>我的笔记</b>${escHTML(noteOf(c.id))}</div>` : ''}
       </div>`;
     }
     return `<div class="br-card flat" id="brCard">
       <span class="ftag">${escHTML(c.deck)}</span>
-      <div class="fq">${tex(c.front)}</div>
-      <div class="br-ans">${tex(c.back)}</div>
+      <div class="fq">${fracFull(c.front) || tex(c.front)}</div>
+      <div class="br-ans">${fracFull(c.back) || tex(c.back)}</div>
       ${c.note ? `<div class="fnote">${tex(c.note)}</div>` : ''}
       ${c.trap ? `<div class="ftrap">💡 ${tex(c.trap)}</div>` : ''}
+      ${noteOf(c.id) ? `<div class="my-note"><b>我的笔记</b>${escHTML(noteOf(c.id))}</div>` : ''}
     </div>`;
   })()}
+  <div class="br-ops">
+    <button class="chip${isFav(c.id) ? ' rsn-on' : ''}" id="brFav">${isFav(c.id) ? '★ 已收藏' : '☆ 收藏'}</button>
+    <button class="chip${isOverridden(c.id) ? ' rsn-on' : ''}" id="brEdit">✐ 改写</button>
+    <button class="chip${noteOf(c.id) ? ' rsn-on' : ''}" id="brNote">✎ 笔记</button>
+  </div>
   <div class="br-nav">
     <button class="chip" id="brPrev" ${BROWSE.i === 0 ? 'disabled' : ''} style="padding:11px 20px;">‹ 上一张</button>
     <span class="br-idx">${BROWSE.i + 1} / ${BROWSE.list.length}</span>
@@ -10404,8 +10579,17 @@ const BROWSE_UI = {
   .card-img img{width:100%; display:block; border-radius:12px;}
   .img-full{position:fixed; inset:0; background:rgba(0,0,0,.82); z-index:1500; display:flex;
     align-items:center; justify-content:center; padding:10px;}
-  .eq-big{font-size:27px; font-weight:700; color:#e0455f; text-align:center;
-    padding:26px 8px 18px; letter-spacing:.5px; line-height:1.4; word-break:break-word;}
+  .qmeta-r{display:flex; align-items:center; gap:7px;}
+  .br-ops{display:flex; gap:10px; justify-content:center; margin:14px 0 6px;}
+  .br-ops .chip{padding:9px 16px; font-size:12.5px;}
+  .eq-big{font-size:clamp(19px,5.4vw,27px); font-weight:700; color:#e0455f; text-align:center;
+    padding:22px 8px 16px; letter-spacing:.3px; line-height:1.5; word-break:break-word; overflow-wrap:anywhere;}
+  .eq-big .frac{font-size:.9em;}
+  .eq-big sup{font-size:.62em; vertical-align:super;}
+  .eq-big sup .frac{font-size:.92em;}
+  .eq-big sup .frac b{border-bottom-width:1px; padding:0 2px 0;}
+  .eq-big sup .frac i{padding:0 2px 0;}
+  .eq-big .frac-note{display:block; margin:8px 0 0; font-size:11px; font-weight:500; color:var(--dim);}
   .br-card.eq .fnote{margin-top:4px;}
   .br-ans{margin-top:14px; padding:14px 16px; border-radius:14px; background:#f2fbf6;
     border:1px solid #cfeddd; color:#0f7a56; font-size:16px; line-height:1.8; font-weight:500;
@@ -10505,7 +10689,7 @@ function openCardInfo(id) {
     <div class="sdesc">${escHTML(c.deck || '')}${(c.tags && c.tags.length) ? ' · ' + c.tags.map(t => escHTML(t)).join(' / ') : ''}</div>
     <div class="fq" style="margin-bottom:12px;">${tex(c.front)}</div>
     ${Array.isArray(c.options) && c.options.length ? `<div class="opts">${c.options.map((o, i) => `<div class="opt"><i>${'ABCD'[i]}</i><span>${tex(o)}</span></div>`).join('')}</div>` : ''}
-    <div class="br-ans" style="margin-top:14px;">${tex(c.back)}</div>
+    <div class="br-ans" style="margin-top:14px;">${fracFull(c.back) || tex(c.back)}</div>
     ${c.note ? `<div class="fnote">${tex(c.note)}</div>` : ''}
     ${c.imgKey ? `<div class="card-img" data-imgkey="${escAttr(c.imgKey)}"></div>` : ''}
     <button class="chip" id="copyCardBtn" style="width:100%; padding:11px; margin-top:14px;">复制题目</button>
@@ -10806,6 +10990,63 @@ function makeRecognizer(onText, onState) {
   };
   rec.onend = function () { onState('idle'); };
   return rec;
+}
+
+/* ---------- 题目改写（覆盖题库原文，不动选项与答案） ---------- */
+function applyOv(c) {
+  if (!c || !c.id) return c;
+  let ov = null;
+  try { ov = (M().overrides || {})[c.id] || null; } catch (e) {}
+  if (!ov) return c;
+  const o = Object.assign({}, c);
+  if (ov.front) { o.front = ov.front; o.q = ov.front; o.headline = ov.front; }
+  if (ov.back) o.back = ov.back;
+  if (ov.tip) { o.tip = ov.tip; o.note = ov.tip; }
+  if (ov.tag) o.tag = ov.tag;
+  return o;
+}
+
+function isOverridden(id) {
+  try { return !!(M().overrides || {})[id]; } catch (e) { return false; }
+}
+
+function openCardEditor(id) {
+  const c = (typeof applyOv === 'function' ? (findCard(id) || (function () { try { return allCards().find(function (x) { return x.id === id; }); } catch (e) { return null; } })()) : null);
+  if (!c) { toast('找不到这道题'); return; }
+  const ov = (function () { try { return (M().overrides || {})[id] || {}; } catch (e) { return {}; } })();
+  const f0 = ov.front != null ? ov.front : (c.q || c.front || '');
+  const b0 = ov.back != null ? ov.back : (c.back || (Array.isArray(c.options) ? (c.options[c.ans] || '') : ''));
+  const t0 = ov.tip != null ? ov.tip : (c.tip || c.note || '');
+  const g0 = ov.tag != null ? ov.tag : (c.tag || c.deck || '');
+  const box = ' style="width:100%; border:1px solid var(--line); border-radius:12px; padding:11px; font-size:14px; font-family:inherit; outline:none; resize:vertical;"';
+  sheet('<h3>改写这道题</h3>'
+    + '<div class="sdesc">只改文字，选项和正确答案不动，判分不受影响</div>'
+    + '<div class="field"><label>题干</label><textarea id="ceF" rows="3"' + box + '>' + escHTML(f0) + '</textarea></div>'
+    + '<div class="field"><label>答案</label><textarea id="ceB" rows="2"' + box + '>' + escHTML(b0) + '</textarea></div>'
+    + '<div class="field"><label>解析</label><textarea id="ceT" rows="4"' + box + '>' + escHTML(t0) + '</textarea></div>'
+    + '<div class="field"><label>分类</label><input id="ceG" type="text" value="' + escAttr(g0) + '"' + box.replace('resize:vertical;', '') + '></div>'
+    + '<button class="btn-main" id="ceSave">保存改写</button>'
+    + (isOverridden(id) ? '<button class="chip" id="ceReset" style="width:100%; padding:12px; margin-top:9px;">恢复原文</button>' : ''),
+    function (el, close) {
+      el.querySelector('#ceSave').onclick = function () {
+        try {
+          const m = M();
+          if (!m.overrides) m.overrides = {};
+          m.overrides[id] = {
+            front: el.querySelector('#ceF').value.trim(),
+            back: el.querySelector('#ceB').value.trim(),
+            tip: el.querySelector('#ceT').value.trim(),
+            tag: el.querySelector('#ceG').value.trim()
+          };
+          saveDB();
+          close(); render(); toast('已改写');
+        } catch (e) { toast('保存失败'); }
+      };
+      const rs = el.querySelector('#ceReset');
+      if (rs) rs.onclick = function () {
+        try { const m = M(); if (m.overrides) delete m.overrides[id]; saveDB(); close(); render(); toast('已恢复原文'); } catch (e) {}
+      };
+    });
 }
 
 /* ---------- 新建 / 编辑卡片 ---------- */
